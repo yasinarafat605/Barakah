@@ -99,6 +99,8 @@ export async function getAccountsWithBalances(
            CASE
              WHEN t.type = 'income' THEN t.amount
              WHEN t.type = 'expense' THEN -t.amount
+             WHEN t.type = 'transfer' AND t.transfer_role = 'destination' THEN t.amount
+             WHEN t.type = 'transfer' AND t.transfer_role = 'source' THEN -t.amount
              ELSE 0
            END
          ),
@@ -106,7 +108,7 @@ export async function getAccountsWithBalances(
        ) AS transaction_net,
        COUNT(t.id) AS transaction_count
      FROM accounts a
-     LEFT JOIN transactions t ON a.id = t.account_id
+     LEFT JOIN transactions t ON a.id = t.account_id AND t.deleted_at IS NULL
      GROUP BY a.id
      ORDER BY a.created_at ASC;`
   );
@@ -154,6 +156,8 @@ export async function getAccountById(
            CASE
              WHEN t.type = 'income' THEN t.amount
              WHEN t.type = 'expense' THEN -t.amount
+             WHEN t.type = 'transfer' AND t.transfer_role = 'destination' THEN t.amount
+             WHEN t.type = 'transfer' AND t.transfer_role = 'source' THEN -t.amount
              ELSE 0
            END
          ),
@@ -161,7 +165,7 @@ export async function getAccountById(
        ) AS transaction_net,
        COUNT(t.id) AS transaction_count
      FROM accounts a
-     LEFT JOIN transactions t ON a.id = t.account_id
+     LEFT JOIN transactions t ON a.id = t.account_id AND t.deleted_at IS NULL
      WHERE a.id = ?
      GROUP BY a.id;`,
     id
@@ -201,3 +205,9 @@ export async function deleteAccount(
   const result = await db.runAsync('DELETE FROM accounts WHERE id = ?;', id);
   return result.changes > 0;
 }
+
+/**
+ * Alias for getAccountsWithBalances
+ */
+export const getAccounts = getAccountsWithBalances;
+

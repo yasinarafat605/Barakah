@@ -5,8 +5,10 @@
 
 import { DatabaseConnection, Migration } from './types';
 import { migration001 } from './migrations/001_initial_schema';
+import { migration002 } from './migrations/002_categories_and_transfers';
+import { runExclusiveTransaction } from './client';
 
-export const MIGRATIONS: Migration[] = [migration001];
+export const MIGRATIONS: Migration[] = [migration001, migration002];
 
 export interface MigrationResult {
   applied: number;
@@ -33,7 +35,7 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
   const pending = MIGRATIONS.filter((m) => !appliedSet.has(m.version)).sort((a, b) => a.version - b.version);
 
   for (const migration of pending) {
-    await db.withTransactionAsync(async () => {
+    await runExclusiveTransaction(db, async () => {
       await migration.up(db);
       await db.runAsync(
         'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?);',

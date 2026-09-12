@@ -45,6 +45,16 @@ export function createBetterSqliteConnection(filename: string = ':memory:'): Dat
         throw err;
       }
     },
+    async withExclusiveTransactionAsync(task: () => Promise<void>): Promise<void> {
+      db.exec('BEGIN EXCLUSIVE');
+      try {
+        await task();
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    },
     async closeAsync(): Promise<void> {
       db.close();
     },

@@ -52,3 +52,19 @@ export async function closeDatabase(): Promise<void> {
 export function setDatabase(db: DatabaseConnection | null): void {
   databaseInstance = db;
 }
+
+/**
+ * Executes a task within an exclusive transaction if supported,
+ * falling back to standard transaction.
+ */
+export async function runExclusiveTransaction(
+  db: DatabaseConnection,
+  task: () => Promise<void>
+): Promise<void> {
+  if (typeof db.withExclusiveTransactionAsync === 'function') {
+    await db.withExclusiveTransactionAsync(task);
+  } else {
+    await db.withTransactionAsync(task);
+  }
+}
+

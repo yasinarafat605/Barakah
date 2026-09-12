@@ -28,6 +28,118 @@ export function toBengaliNumerals(strOrNum: string | number): string {
   return String(strOrNum).replace(/[0-9]/g, (digit) => BENGALI_DIGITS[parseInt(digit, 10)]);
 }
 
+/**
+ * Converts Bengali digits (০-৯) to Latin digits (0-9).
+ */
+export function fromBengaliNumerals(str: string): string {
+  return String(str).replace(/[০-৯]/g, (d) => String('০১২৩৪৫৬৭৮৯'.indexOf(d)));
+}
+
+export type MoneyParseError =
+  | 'empty'
+  | 'whitespace'
+  | 'signed'
+  | 'exponent'
+  | 'mixed_separators'
+  | 'multiple_decimals'
+  | 'invalid_format'
+  | 'too_many_decimals'
+  | 'zero_or_negative'
+  | 'exceeds_bounds';
+
+export interface MoneyParseResult {
+  valid: boolean;
+  amountMinor: number;
+  error?: MoneyParseError;
+}
+
+/**
+ * Parses monetary input string into integer minor units without floating-point arithmetic.
+ * Conforms strictly to:
+ * - Bengali and Latin digits accepted.
+ * - '.' or ',' accepted as decimal separator.
+ * - Input containing both '.' and ',' rejected as ambiguous.
+ * - Grouping separators rejected.
+ * - Max fractional digits enforced based on currency (default 2).
+ * - Exponent notation rejected.
+ * - Signs (+, -) rejected.
+ * - Internal whitespace rejected.
+ * - Zero and negative amounts rejected.
+ * - Values exceeding JS safe integer range (Number.MAX_SAFE_INTEGER) rejected.
+ */
+export function parseMoneyInput(rawInput: string, decimalPlaces: number = 2): MoneyParseResult {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return { valid: false, amountMinor: 0, error: 'empty' };
+  }
+
+  // Reject internal whitespace
+  if (/\s/.test(trimmed)) {
+    return { valid: false, amountMinor: 0, error: 'whitespace' };
+  }
+
+  // Reject signs
+  if (/[-+]/.test(trimmed)) {
+    return { valid: false, amountMinor: 0, error: 'signed' };
+  }
+
+  // Reject exponent notation
+  if (/[eE]/.test(trimmed)) {
+    return { valid: false, amountMinor: 0, error: 'exponent' };
+  }
+
+  // Convert Bengali numerals to Latin
+  const normalized = fromBengaliNumerals(trimmed);
+
+  // Reject mixed decimal separators
+  const hasDot = normalized.includes('.');
+  const hasComma = normalized.includes(',');
+  if (hasDot && hasComma) {
+    return { valid: false, amountMinor: 0, error: 'mixed_separators' };
+  }
+
+  // Reject multiple decimal/separator occurrences (e.g. 1,000,000 or 1.2.3)
+  const dotCount = (normalized.match(/\./g) || []).length;
+  const commaCount = (normalized.match(/,/g) || []).length;
+  if (dotCount > 1 || commaCount > 1) {
+    return { valid: false, amountMinor: 0, error: 'multiple_decimals' };
+  }
+
+  // Unify decimal separator to dot
+  const unified = normalized.replace(',', '.');
+
+  // Verify only digits and optional single dot
+  if (!/^\d+(\.\d*)?$/.test(unified) && !/^\.\d+$/.test(unified)) {
+    return { valid: false, amountMinor: 0, error: 'invalid_format' };
+  }
+
+  const [intPart = '', fracPart = ''] = unified.split('.');
+
+  if (fracPart.length > decimalPlaces) {
+    return { valid: false, amountMinor: 0, error: 'too_many_decimals' };
+  }
+
+  // Calculate minor units strictly with integer string padding
+  const paddedFrac = fracPart.padEnd(decimalPlaces, '0');
+  const intBig = intPart ? BigInt(intPart) : 0n;
+  const fracBig = paddedFrac ? BigInt(paddedFrac) : 0n;
+  const multiplier = BigInt(10 ** decimalPlaces);
+  const totalMinorBig = intBig * multiplier + fracBig;
+
+  if (totalMinorBig <= 0n) {
+    return { valid: false, amountMinor: 0, error: 'zero_or_negative' };
+  }
+
+  if (totalMinorBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return { valid: false, amountMinor: 0, error: 'exceeds_bounds' };
+  }
+
+  return {
+    valid: true,
+    amountMinor: Number(totalMinorBig),
+  };
+}
+
 export class Money {
   readonly amount: number;
   readonly currency: string;

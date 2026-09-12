@@ -288,7 +288,7 @@ describe('Accounts Repository & Derived Balance Engine (ADR-004, ADR-005)', () =
          VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
         'tx_child',
         account.id,
-        null,
+        'cat_exp_food_groceries',
         5000,
         'expense',
         'Protected test',

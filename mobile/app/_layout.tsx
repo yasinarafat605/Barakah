@@ -6,6 +6,7 @@ import 'react-native-reanimated';
 
 import '@/src/lib/i18n';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { DatabaseProvider } from '@/src/db/provider';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -17,11 +18,20 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: t('modal.title') }} />
-      </Stack>
-      <StatusBar style="auto" />
+      <DatabaseProvider>
+        <Stack>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="modal"
+            options={{
+              presentation: 'modal',
+              title: t('transactions.addTransaction'),
+              headerShown: false,
+            }}
+          />
+        </Stack>
+        <StatusBar style="auto" />
+      </DatabaseProvider>
     </ThemeProvider>
   );
 }

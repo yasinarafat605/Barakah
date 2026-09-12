@@ -24,13 +24,15 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
   describe('Migration Engine', () => {
     it('applies migrations from scratch cleanly and tracks them in schema_migrations', async () => {
       const result = await runMigrations(db);
-      expect(result.applied).toBe(1);
-      expect(result.versions).toEqual([1]);
+      expect(result.applied).toBe(2);
+      expect(result.versions).toEqual([1, 2]);
 
       const applied = await getAppliedMigrations(db);
-      expect(applied).toHaveLength(1);
+      expect(applied).toHaveLength(2);
       expect(applied[0].version).toBe(1);
       expect(applied[0].name).toBe('001_initial_schema');
+      expect(applied[1].version).toBe(2);
+      expect(applied[1].name).toBe('002_categories_and_transfers');
       expect(typeof applied[0].applied_at).toBe('number');
     });
 
@@ -175,7 +177,7 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
           'tx_orphan',
           'non_existent_account',
-          null,
+          'cat_exp_food_groceries',
           1000,
           'expense',
           'Orphan test',
@@ -236,7 +238,7 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
         'tx_child',
         'acc_parent',
-        null,
+        'cat_inc_salary_wages',
         2000,
         'income',
         'Salary deposit',
