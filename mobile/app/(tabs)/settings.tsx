@@ -1,11 +1,12 @@
 import React from 'react';
-import { StyleSheet, View, Text, TouchableOpacity } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { BrandMark } from '@/src/components/BrandMark';
 
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -15,6 +16,12 @@ export default function SettingsScreen() {
   const toggleLanguage = () => {
     const nextLocale = i18n.language === 'bn' ? 'en' : 'bn';
     i18n.changeLanguage(nextLocale);
+  };
+
+  const openWebsite = () => {
+    Linking.openURL('https://barakah.money').catch((err) =>
+      console.warn('Could not open barakah.money:', err)
+    );
   };
 
   return (
@@ -38,6 +45,33 @@ export default function SettingsScreen() {
           </View>
           <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
+
+        {/* About Barakah Card */}
+        <View style={[styles.aboutCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <View style={styles.aboutHeader}>
+            <BrandMark
+              variant="horizontal"
+              height={28}
+              reverse={colorScheme === 'dark'}
+              accessibilityLabel="Barakah"
+            />
+            <Text style={[styles.versionText, { color: theme.textMuted }]}>
+              {t('settings.version')}
+            </Text>
+          </View>
+          <Text style={[styles.privacyText, { color: theme.textMuted }]}>
+            {t('settings.privacyNotice')}
+          </Text>
+          <TouchableOpacity
+            onPress={openWebsite}
+            style={[styles.websiteRow, { borderTopColor: theme.border }]}
+            accessibilityRole="link">
+            <Text style={[styles.websiteLabel, { color: theme.primary }]}>
+              {t('settings.website')}
+            </Text>
+            <Ionicons name="open-outline" size={16} color={theme.primary} />
+          </TouchableOpacity>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -77,5 +111,34 @@ const styles = StyleSheet.create({
   rowLabel: {
     fontSize: 16,
     fontWeight: '500',
+  },
+  aboutCard: {
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+  },
+  aboutHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  versionText: {
+    fontSize: 12,
+  },
+  privacyText: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  websiteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  websiteLabel: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

@@ -8,28 +8,32 @@ import {
   StyleProp,
 } from 'react-native';
 
-export type BrandMarkVariant = 'icon' | 'horizontal' | 'stacked' | 'primary';
+export type BrandMarkVariant = 'icon' | 'horizontal' | 'stacked' | 'primary' | 'symbol';
 
 export interface BrandMarkProps {
   /**
-   * Brand lockup variant per ADR-015 & doc 09 §2
-   * - 'icon': Transparent shield mark (4096×4096 source, min 24px)
-   * - 'horizontal': Horizontal wordmark lockup (3072×1114 source, min 120px wide)
-   * - 'stacked': Stacked lockup (2048×2405 source, min 96px wide)
-   * - 'primary': Full primary lockup (4096×1959 source, min 140px wide)
+   * Barakah brand lockup variant
+   * - 'icon' / 'symbol': Geometric B mark with growth leaf (1024×1024 master, min 24px)
+   * - 'horizontal': Horizontal wordmark lockup (1800×520 master, min 120px wide)
+   * - 'stacked': Stacked lockup (1200×1400 master, min 96px wide)
+   * - 'primary': Full primary brand lockup
    */
   variant?: BrandMarkVariant;
+  /**
+   * Whether to render reverse artwork for dark surfaces
+   */
+  reverse?: boolean;
   /**
    * Target display width or height depending on layout context
    */
   width?: number;
   height?: number;
   /**
-   * Accessibility label for screen readers. Never empty.
+   * Accessibility label for screen readers. Never empty. Defaults to 'Barakah'.
    */
   accessibilityLabel?: string;
   /**
-   * Enforce >= 25% clear space padding around the mark (doc 09 §2.5)
+   * Enforce >= 25% clear space padding around the mark (Barakah Brand Guidelines §Logo)
    */
   clearSpace?: boolean;
   /**
@@ -42,11 +46,12 @@ export interface BrandMarkProps {
   imageStyle?: StyleProp<ImageStyle>;
 }
 
-// Brand source dimensions & minimum sizing constraints (doc 09 §2.6)
+// Master Barakah Brand constraints and asset mappings
 const BRAND_CONSTRAINTS: Record<
   BrandMarkVariant,
   {
-    source: any;
+    standardSource: any;
+    reverseSource: any;
     aspectRatio: number; // width / height
     minWidth: number;
     minHeight: number;
@@ -55,55 +60,70 @@ const BRAND_CONSTRAINTS: Record<
   }
 > = {
   icon: {
-    source: require('@/assets/images/mark.png'),
-    aspectRatio: 1, // 4096 x 4096
+    standardSource: require('@/assets/images/mark.png'),
+    reverseSource: require('@/assets/images/mark-reverse.png'),
+    aspectRatio: 1, // 1024 x 1024
+    minWidth: 24,
+    minHeight: 24,
+    defaultWidth: 32,
+    defaultHeight: 32,
+  },
+  symbol: {
+    standardSource: require('@/assets/images/mark.png'),
+    reverseSource: require('@/assets/images/mark-reverse.png'),
+    aspectRatio: 1, // 1024 x 1024
     minWidth: 24,
     minHeight: 24,
     defaultWidth: 32,
     defaultHeight: 32,
   },
   horizontal: {
-    source: require('@/assets/images/logo-horizontal.png'),
-    aspectRatio: 3072 / 1114, // ~2.7576
+    standardSource: require('@/assets/images/logo-horizontal.png'),
+    reverseSource: require('@/assets/images/logo-horizontal-reverse.png'),
+    aspectRatio: 1800 / 520, // ~3.4615
     minWidth: 120,
-    minHeight: Math.round(120 / (3072 / 1114)), // ~44px
+    minHeight: Math.round(120 / (1800 / 520)), // ~35px
     defaultWidth: 148,
-    defaultHeight: Math.round(148 / (3072 / 1114)), // ~54px
+    defaultHeight: Math.round(148 / (1800 / 520)), // ~43px
   },
   stacked: {
-    source: require('@/assets/images/logo-stacked.png'),
-    aspectRatio: 2048 / 2405, // ~0.8516
+    standardSource: require('@/assets/images/logo-stacked.png'),
+    reverseSource: require('@/assets/images/logo-stacked-reverse.png'),
+    aspectRatio: 1200 / 1400, // ~0.8571
     minWidth: 96,
-    minHeight: Math.round(96 / (2048 / 2405)), // ~113px
+    minHeight: Math.round(96 / (1200 / 1400)), // ~112px
     defaultWidth: 120,
-    defaultHeight: Math.round(120 / (2048 / 2405)), // ~141px
+    defaultHeight: Math.round(120 / (1200 / 1400)), // ~140px
   },
   primary: {
-    source: require('@/assets/images/logo-primary.png'),
-    aspectRatio: 4096 / 1959, // ~2.0909
-    minWidth: 140,
-    minHeight: Math.round(140 / (4096 / 1959)), // ~67px
-    defaultWidth: 180,
-    defaultHeight: Math.round(180 / (4096 / 1959)), // ~86px
+    standardSource: require('@/assets/images/logo-horizontal.png'),
+    reverseSource: require('@/assets/images/logo-horizontal-reverse.png'),
+    aspectRatio: 1800 / 520, // ~3.4615
+    minWidth: 120,
+    minHeight: Math.round(120 / (1800 / 520)), // ~35px
+    defaultWidth: 160,
+    defaultHeight: Math.round(160 / (1800 / 520)), // ~46px
   },
 };
 
 /**
  * BrandMark
- * The authoritative visual component for rendering Friday Amanah logos and marks.
+ * The authoritative visual component for rendering Barakah logos and marks.
  * Enforces brand clear-space and minimum-dimension rules in code.
- * Follows Rule 6 / ADR-015 and docs 09 & 17.
+ * Follows Barakah Brand Guidelines v1.
  */
 export function BrandMark({
   variant = 'icon',
+  reverse = false,
   width: propWidth,
   height: propHeight,
-  accessibilityLabel = 'Friday Amanah',
+  accessibilityLabel = 'Barakah',
   clearSpace = false,
   style,
   imageStyle,
 }: BrandMarkProps) {
   const config = BRAND_CONSTRAINTS[variant];
+  const source = reverse ? config.reverseSource : config.standardSource;
 
   // Resolve final dimensions respecting aspect ratio and minimum sizes
   let finalWidth = config.defaultWidth;
@@ -120,7 +140,7 @@ export function BrandMark({
     finalWidth = Math.round(finalHeight * config.aspectRatio);
   }
 
-  // Clear space: >= 25% of height per doc 09 §2.5
+  // Clear space: >= 25% of dimension per Barakah Brand Guidelines
   const clearSpacePadding = clearSpace ? Math.round(finalHeight * 0.25) : 0;
 
   return (
@@ -134,7 +154,7 @@ export function BrandMark({
       accessibilityRole="image"
       accessibilityLabel={accessibilityLabel}>
       <Image
-        source={config.source}
+        source={source}
         style={[
           {
             width: finalWidth,

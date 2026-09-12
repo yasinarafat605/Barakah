@@ -2,6 +2,33 @@
 
 ---
 
+## Revision 3 — 12 September 2026
+
+**Trigger:** Official brand system upgrade and rebrand from "Friday Amanah" to "Barakah".  
+**Brand Source:** `Barakah_Brand_Assets_v1/`  
+**Primary Domain:** `barakah.money`  
+**Product Category:** Privacy-first Islamic personal finance application.
+
+### Summary
+
+| Area | Revision 2 | Revision 3 |
+|---|---|---|
+| Product name | Friday Amanah | **Barakah** |
+| Wordmark | Friday Amanah | **barakah** |
+| Primary domain | — | **barakah.money** |
+| Primary colour | Deep Emerald `#087A62` | **Barakah Emerald `#0B6B57`** |
+| Midnight colour | Midnight Navy `#0A1D37` | **Midnight Green `#102A43`** |
+| Background colour | Cloud White `#F8FAFC` | **Warm Ivory `#F7F8F4`** |
+| Charcoal colour | `#1F2937` | **Charcoal `#17211D`** |
+| Gold accent | Trust Gold `#D2A74B` | **Barakah Gold `#D6B15B`** |
+| SQLite database | `friday_amanah.db` | **`barakah.db` (clean SQLite storage)** |
+| Android package / bundle ID | `org.royalopencollege.fridayamanah` | **`money.barakah.app` (official package identifier)** |
+| Deep-link scheme | `fridayamanah` | **`barakah` (`barakah://`)** |
+| BrandMark component | Friday Amanah marks | **Barakah Brand Assets v1 masters (horizontal, stacked, reverse, symbol)** |
+| PWA manifest | Friday Amanah | **Barakah (theme `#0B6B57`, bg `#F7F8F4`)** |
+
+---
+
 ## Revision 2 — 5 August 2026
 
 **Trigger:** founder correction pass covering the product name, the approved brand package,

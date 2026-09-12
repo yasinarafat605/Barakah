@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3840 2160" role="img" aria-labelledby="title desc">
+<title id="title">Barakah brand asset</title>
+<desc id="desc">Geometric Barakah B mark with a growth leaf and balanced ledger form.</desc>
+<rect width="3840" height="2160" fill="#F7F8F4"/>
+<rect x="0" y="0" width="3840" height="200" fill="#102A43"/>
+<text x="155" y="128" fill="white" font-family="sans-serif" font-size="72" font-weight="700">BARAKAH — BRAND SYSTEM v1</text>
+<text x="155" y="350" fill="#0B6B57" font-family="sans-serif" font-size="46" font-weight="700">PRIMARY MARK</text>
+<g transform="translate(120 390) scale(.82)"><g id="barakah-symbol">
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="#0B6B57"/>
+  <path d="M330 238 V678 C330 792 414 856 520 856 C632 856 710 782 710 682 C710 580 632 506 522 506 H330"
+        fill="none" stroke="#FFFFFF" stroke-width="78" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M489 421 C522 326 607 291 674 318 C645 402 574 450 489 421 Z" fill="#D6B15B"/>
+  <path d="M510 411 C555 378 598 350 651 326" fill="none" stroke="#0B6B57" stroke-width="14" stroke-linecap="round"/>
+  <path d="M274 608 H392 M274 674 H392" fill="none" stroke="#D6B15B" stroke-width="22" stroke-linecap="round"/>
+</g></g>
+<g transform="translate(1150 650) scale(1.65)"><g id="barakah-wordmark" fill="none" stroke="#17211D" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 18 V126 M18 78 C18 50 39 34 64 34 C92 34 110 54 110 80 C110 107 91 126 63 126 C37 126 18 108 18 82"/>
+  <path d="M139 80 C139 53 158 34 185 34 C213 34 231 54 231 80 C231 107 212 126 185 126 C158 126 139 107 139 80 Z M231 36 V126"/>
+  <path d="M267 36 V126 M267 71 C270 48 287 35 310 35"/>
+  <path d="M340 80 C340 53 359 34 386 34 C414 34 432 54 432 80 C432 107 413 126 386 126 C359 126 340 107 340 80 Z M432 36 V126"/>
+  <path d="M470 18 V126 M470 85 L520 35 M483 72 L527 126"/>
+  <path d="M552 80 C552 53 571 34 598 34 C626 34 644 54 644 80 C644 107 625 126 598 126 C571 126 552 107 552 80 Z M644 36 V126"/>
+  <path d="M681 18 V126 M681 74 C681 50 699 34 722 34 C746 34 760 51 760 76 V126"/>
+</g></g>
+<text x="1150" y="1090" fill="#5E6C65" font-family="sans-serif" font-size="50">Private Islamic money management</text>
+<rect x="2480" y="360" width="1120" height="820" rx="70" fill="#102A43"/>
+<g transform="translate(2650 370) scale(.65)"><g id="barakah-symbol">
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="#0B6B57"/>
+  <path d="M330 238 V678 C330 792 414 856 520 856 C632 856 710 782 710 682 C710 580 632 506 522 506 H330"
+        fill="none" stroke="#FFFFFF" stroke-width="78" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M489 421 C522 326 607 291 674 318 C645 402 574 450 489 421 Z" fill="#D6B15B"/>
+  <path d="M510 411 C555 378 598 350 651 326" fill="none" stroke="#0B6B57" stroke-width="14" stroke-linecap="round"/>
+  <path d="M274 608 H392 M274 674 H392" fill="none" stroke="#D6B15B" stroke-width="22" stroke-linecap="round"/>
+</g></g>
+<g transform="translate(2680 975) scale(1.02)"><g id="barakah-wordmark" fill="none" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 18 V126 M18 78 C18 50 39 34 64 34 C92 34 110 54 110 80 C110 107 91 126 63 126 C37 126 18 108 18 82"/>
+  <path d="M139 80 C139 53 158 34 185 34 C213 34 231 54 231 80 C231 107 212 126 185 126 C158 126 139 107 139 80 Z M231 36 V126"/>
+  <path d="M267 36 V126 M267 71 C270 48 287 35 310 35"/>
+  <path d="M340 80 C340 53 359 34 386 34 C414 34 432 54 432 80 C432 107 413 126 386 126 C359 126 340 107 340 80 Z M432 36 V126"/>
+  <path d="M470 18 V126 M470 85 L520 35 M483 72 L527 126"/>
+  <path d="M552 80 C552 53 571 34 598 34 C626 34 644 54 644 80 C644 107 625 126 598 126 C571 126 552 107 552 80 Z M644 36 V126"/>
+  <path d="M681 18 V126 M681 74 C681 50 699 34 722 34 C746 34 760 51 760 76 V126"/>
+</g></g>
+<text x="155" y="1445" fill="#0B6B57" font-family="sans-serif" font-size="46" font-weight="700">COLOUR PALETTE</text>
+<circle cx="155" cy="1645" r="92" fill="#0B6B57" stroke="#0B6B57" stroke-width="4"/><text x="155" y="1785" text-anchor="middle" fill="#17211D" font-family="sans-serif" font-size="35" font-weight="600">Emerald</text><text x="155" y="1835" text-anchor="middle" fill="#5E6C65" font-family="monospace" font-size="28">#0B6B57</text><circle cx="455" cy="1645" r="92" fill="#102A43" stroke="#102A43" stroke-width="4"/><text x="455" y="1785" text-anchor="middle" fill="#17211D" font-family="sans-serif" font-size="35" font-weight="600">Midnight</text><text x="455" y="1835" text-anchor="middle" fill="#5E6C65" font-family="monospace" font-size="28">#102A43</text><circle cx="755" cy="1645" r="92" fill="#F7F8F4" stroke="#DCE5E1" stroke-width="4"/><text x="755" y="1785" text-anchor="middle" fill="#17211D" font-family="sans-serif" font-size="35" font-weight="600">Ivory</text><text x="755" y="1835" text-anchor="middle" fill="#5E6C65" font-family="monospace" font-size="28">#F7F8F4</text><circle cx="1055" cy="1645" r="92" fill="#17211D" stroke="#17211D" stroke-width="4"/><text x="1055" y="1785" text-anchor="middle" fill="#17211D" font-family="sans-serif" font-size="35" font-weight="600">Charcoal</text><text x="1055" y="1835" text-anchor="middle" fill="#5E6C65" font-family="monospace" font-size="28">#17211D</text><circle cx="1355" cy="1645" r="92" fill="#D6B15B" stroke="#D6B15B" stroke-width="4"/><text x="1355" y="1785" text-anchor="middle" fill="#17211D" font-family="sans-serif" font-size="35" font-weight="600">Gold</text><text x="1355" y="1835" text-anchor="middle" fill="#5E6C65" font-family="monospace" font-size="28">#D6B15B</text><circle cx="1655" cy="1645" r="92" fill="#E3F3ED" stroke="#DCE5E1" stroke-width="4"/><text x="1655" y="1785" text-anchor="middle" fill="#17211D" font-family="sans-serif" font-size="35" font-weight="600">Mint</text><text x="1655" y="1835" text-anchor="middle" fill="#5E6C65" font-family="monospace" font-size="28">#E3F3ED</text>
+<text x="2180" y="1510" fill="#0B6B57" font-family="sans-serif" font-size="46" font-weight="700">DESIGN PRINCIPLES</text>
+<text x="2180" y="1635" fill="#17211D" font-family="sans-serif" font-size="42">Calm • Private • Clear • Responsible</text>
+<text x="2180" y="1720" fill="#5E6C65" font-family="sans-serif" font-size="34">Minimal geometry · restrained gold · generous space</text>
+<text x="2180" y="1790" fill="#5E6C65" font-family="sans-serif" font-size="34">No mosque, crescent, currency sign or transfer imagery</text>
+<rect x="2180" y="1880" width="1180" height="8" rx="4" fill="#D6B15B"/>
+<text x="2180" y="1985" fill="#17211D" font-family="sans-serif" font-size="36">barakah.money</text>
+</svg>

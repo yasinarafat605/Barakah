@@ -1,0 +1,333 @@
+{
+  "package": "Barakah Brand Assets",
+  "version": "1.0",
+  "generated": "2026-09-12",
+  "asset_count_excluding_manifest": 65,
+  "files": [
+    {
+      "path": "01_Logos/PNG_4K/barakah-logo-horizontal-4096.png",
+      "bytes": 125839,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-logo-horizontal-reverse-4096.png",
+      "bytes": 129347,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-logo-stacked-4096.png",
+      "bytes": 243196,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-logo-stacked-reverse-4096.png",
+      "bytes": 245852,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-symbol-mono-dark-4096.png",
+      "bytes": 212275,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-symbol-mono-light-4096.png",
+      "bytes": 200495,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-symbol-primary-4096.png",
+      "bytes": 206682,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-symbol-reverse-4096.png",
+      "bytes": 207120,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-wordmark-dark-4096.png",
+      "bytes": 120313,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/PNG_4K/barakah-wordmark-light-4096.png",
+      "bytes": 85533,
+      "extension": ".png"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-logo-horizontal-reverse.svg",
+      "bytes": 1861,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-logo-horizontal.svg",
+      "bytes": 1858,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-logo-stacked-reverse.svg",
+      "bytes": 1865,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-logo-stacked.svg",
+      "bytes": 1862,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-symbol-mono-dark.svg",
+      "bytes": 883,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-symbol-mono-light.svg",
+      "bytes": 883,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-symbol-primary.svg",
+      "bytes": 883,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-symbol-reverse.svg",
+      "bytes": 883,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-wordmark-dark.svg",
+      "bytes": 1082,
+      "extension": ".svg"
+    },
+    {
+      "path": "01_Logos/SVG/barakah-wordmark-light.svg",
+      "bytes": 1082,
+      "extension": ".svg"
+    },
+    {
+      "path": "02_App_Icons/Android/adaptive-icon-background.txt",
+      "bytes": 8,
+      "extension": ".txt"
+    },
+    {
+      "path": "02_App_Icons/Android/adaptive-icon-foreground-1024.png",
+      "bytes": 19848,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/Android/adaptive-icon-foreground.svg",
+      "bytes": 909,
+      "extension": ".svg"
+    },
+    {
+      "path": "02_App_Icons/Android/app-icon-1024.png",
+      "bytes": 38332,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/Android/app-icon-2048.png",
+      "bytes": 85965,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/Android/app-icon-4096.png",
+      "bytes": 206682,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/Android/monochrome-icon-1024.png",
+      "bytes": 19734,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/Android/monochrome-icon.svg",
+      "bytes": 909,
+      "extension": ".svg"
+    },
+    {
+      "path": "02_App_Icons/Android/notification-icon-512.png",
+      "bytes": 8985,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/Android/notification-icon.svg",
+      "bytes": 581,
+      "extension": ".svg"
+    },
+    {
+      "path": "02_App_Icons/PWA/icon-1024.png",
+      "bytes": 38332,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/PWA/icon-192.png",
+      "bytes": 6439,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/PWA/icon-512.png",
+      "bytes": 17829,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/PWA/maskable-icon-1024.png",
+      "bytes": 23834,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/PWA/maskable-icon-192.png",
+      "bytes": 3814,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/PWA/maskable-icon-512.png",
+      "bytes": 10768,
+      "extension": ".png"
+    },
+    {
+      "path": "02_App_Icons/PWA/maskable-icon.svg",
+      "bytes": 912,
+      "extension": ".svg"
+    },
+    {
+      "path": "03_Splash/splash-dark-1440x3200.png",
+      "bytes": 88889,
+      "extension": ".png"
+    },
+    {
+      "path": "03_Splash/splash-dark.svg",
+      "bytes": 2078,
+      "extension": ".svg"
+    },
+    {
+      "path": "03_Splash/splash-light-1440x3200.png",
+      "bytes": 90039,
+      "extension": ".png"
+    },
+    {
+      "path": "03_Splash/splash-light.svg",
+      "bytes": 2078,
+      "extension": ".svg"
+    },
+    {
+      "path": "04_Web/apple-touch-icon-180.png",
+      "bytes": 6045,
+      "extension": ".png"
+    },
+    {
+      "path": "04_Web/favicon-16.png",
+      "bytes": 553,
+      "extension": ".png"
+    },
+    {
+      "path": "04_Web/favicon-32.png",
+      "bytes": 1068,
+      "extension": ".png"
+    },
+    {
+      "path": "04_Web/favicon-48.png",
+      "bytes": 1638,
+      "extension": ".png"
+    },
+    {
+      "path": "04_Web/favicon-512.png",
+      "bytes": 17829,
+      "extension": ".png"
+    },
+    {
+      "path": "04_Web/favicon.ico",
+      "bytes": 15086,
+      "extension": ".ico"
+    },
+    {
+      "path": "04_Web/favicon.svg",
+      "bytes": 883,
+      "extension": ".svg"
+    },
+    {
+      "path": "04_Web/social-share-2400x1260.png",
+      "bytes": 141978,
+      "extension": ".png"
+    },
+    {
+      "path": "04_Web/social-share-2x.svg",
+      "bytes": 2460,
+      "extension": ".svg"
+    },
+    {
+      "path": "05_Social/launch-template-2160.png",
+      "bytes": 105122,
+      "extension": ".png"
+    },
+    {
+      "path": "05_Social/launch-template.svg",
+      "bytes": 2144,
+      "extension": ".svg"
+    },
+    {
+      "path": "05_Social/profile-avatar-2048.png",
+      "bytes": 85965,
+      "extension": ".png"
+    },
+    {
+      "path": "05_Social/profile-avatar.svg",
+      "bytes": 911,
+      "extension": ".svg"
+    },
+    {
+      "path": "06_Brand_Guidelines/BRAND-GUIDELINES.md",
+      "bytes": 1861,
+      "extension": ".md"
+    },
+    {
+      "path": "06_Brand_Guidelines/brand-board-3840x2160.png",
+      "bytes": 338555,
+      "extension": ".png"
+    },
+    {
+      "path": "06_Brand_Guidelines/brand-board-4k.svg",
+      "bytes": 6717,
+      "extension": ".svg"
+    },
+    {
+      "path": "06_Brand_Guidelines/logo-clear-space-2400x1500.png",
+      "bytes": 97381,
+      "extension": ".png"
+    },
+    {
+      "path": "06_Brand_Guidelines/logo-clear-space.svg",
+      "bytes": 2333,
+      "extension": ".svg"
+    },
+    {
+      "path": "07_Developer/barakah-colors.css",
+      "bytes": 663,
+      "extension": ".css"
+    },
+    {
+      "path": "07_Developer/barakah-colors.ts",
+      "bytes": 536,
+      "extension": ".ts"
+    },
+    {
+      "path": "07_Developer/colors.json",
+      "bytes": 536,
+      "extension": ".json"
+    },
+    {
+      "path": "07_Developer/design-tokens.json",
+      "bytes": 948,
+      "extension": ".json"
+    },
+    {
+      "path": "08_Source/generate_barakah_brand_assets.py",
+      "bytes": 25657,
+      "extension": ".py"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1851,
+      "extension": ".md"
+    }
+  ]
+}

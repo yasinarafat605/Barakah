@@ -1,5 +1,5 @@
 /**
- * Friday Amanah Accounts Repository & Data Access Layer
+ * Barakah Accounts Repository & Data Access Layer
  * Strict Rules:
  * - ADR-001: Local-first SQLite database source of truth.
  * - ADR-004 / Rule 1: All money values are integer minor units (poisha).

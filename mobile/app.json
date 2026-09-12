@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "Friday Amanah",
-    "slug": "friday-amanah",
+    "name": "Barakah",
+    "slug": "barakah",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "fridayamanah",
+    "scheme": "barakah",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "org.royalopencollege.fridayamanah"
+      "bundleIdentifier": "money.barakah.app"
     },
     "android": {
-      "package": "org.royalopencollege.fridayamanah",
+      "package": "money.barakah.app",
       "adaptiveIcon": {
-        "backgroundColor": "#0A1D37",
+        "backgroundColor": "#0B6B57",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -35,9 +35,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#F8FAFC",
+          "backgroundColor": "#F7F8F4",
           "dark": {
-            "backgroundColor": "#06121F"
+            "backgroundColor": "#071915"
           }
         }
       ],

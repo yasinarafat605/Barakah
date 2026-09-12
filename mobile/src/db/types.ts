@@ -1,5 +1,5 @@
 /**
- * SQLite Database Core Types for Friday Amanah
+ * SQLite Database Core Types for Barakah
  * Adheres strictly to:
  * - Local-first architecture (ADR-001)
  * - Rule 1 / ADR-004: All money stored as INTEGER minor units (poisha). No REAL/FLOAT.

@@ -1,5 +1,5 @@
 /**
- * Deterministic Migration Runner for Friday Amanah
+ * Deterministic Migration Runner for Barakah
  * Tracks applied migrations in `schema_migrations` table.
  */
 

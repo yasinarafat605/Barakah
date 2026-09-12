@@ -1,10 +1,10 @@
-import { getDatabase, closeDatabase, setDatabase } from '../client';
+import { getDatabase, closeDatabase, setDatabase, DEFAULT_DATABASE_NAME } from '../client';
 import { createBetterSqliteConnection } from '../test-adapter';
 import { runMigrations, getAppliedMigrations } from '../migrations';
 import { AccountRow, CategoryRow, TransactionRow, DatabaseConnection } from '../types';
 import { Money } from '../../domain/money';
 
-describe('Friday Amanah Database Core & Migrations (ADR-001, ADR-004)', () => {
+describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
   let db: DatabaseConnection;
 
   beforeEach(async () => {
@@ -248,4 +248,11 @@ describe('Friday Amanah Database Core & Migrations (ADR-001, ADR-004)', () => {
       await expect(db.runAsync('DELETE FROM accounts WHERE id = ?;', 'acc_parent')).rejects.toThrow(/FOREIGN KEY/i);
     });
   });
+
+  describe('Database Configuration', () => {
+    it('defines barakah.db as the default clean database name', () => {
+      expect(DEFAULT_DATABASE_NAME).toBe('barakah.db');
+    });
+  });
 });
+

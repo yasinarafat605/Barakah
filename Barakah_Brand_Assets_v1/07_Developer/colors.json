@@ -1,0 +1,22 @@
+{
+  "barakah_emerald": "#0B6B57",
+  "midnight_green": "#102A43",
+  "warm_ivory": "#F7F8F4",
+  "white": "#FFFFFF",
+  "charcoal": "#17211D",
+  "muted_slate": "#5E6C65",
+  "barakah_gold": "#D6B15B",
+  "soft_mint": "#E3F3ED",
+  "soft_sand": "#F5EEDC",
+  "cool_border": "#DCE5E1",
+  "income": "#087A62",
+  "expense": "#B5473A",
+  "receivable": "#2F6FED",
+  "payable": "#8A5A1E",
+  "zakat": "#7A4FB3",
+  "warning": "#B86E00",
+  "critical": "#B42318",
+  "dark_background": "#071915",
+  "dark_surface": "#0E2721",
+  "dark_primary": "#5DDBB7"
+}

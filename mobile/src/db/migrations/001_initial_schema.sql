@@ -1,5 +1,5 @@
 -- 001_initial_schema.sql
--- Initial database schema for Friday Amanah
+-- Initial database schema for Barakah
 -- Strict compliance with ADR-004 (Money as integer minor units) & ADR-001 (Local-first)
 
 CREATE TABLE IF NOT EXISTS accounts (

@@ -1,13 +1,13 @@
 /**
- * Friday Amanah Typography Tokens
- * Source of truth: docs/09-design-system.md §4
+ * Barakah Typography Tokens
+ * Source of truth: Barakah_Brand_Assets_v1/07_Developer/design-tokens.json
  */
 
 export const Typography = {
   fontFamilies: {
-    display: 'Poppins', // Headings, onboarding, screen titles
+    display: 'Inter', // Barakah brand Latin display & headings
     body: 'Inter', // Working text, tables, amounts, forms
-    bengali: 'Noto Sans Bengali', // Bangla text substitution
+    bengali: 'Noto Sans Bengali', // Bangla text shaping
   },
   fontSize: {
     xs: 12,
@@ -31,4 +31,5 @@ export const Typography = {
   },
   // Bangla script requires additional vertical breathing room
   banglaLineHeightMultiplier: 1.25,
+  numberFeature: 'tabular-nums',
 } as const;

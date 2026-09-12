@@ -1,5 +1,5 @@
 /**
- * Friday Amanah Spacing and Layout Tokens
+ * Barakah Spacing and Layout Tokens
  * Source of truth: docs/09-design-system.md
  */
 

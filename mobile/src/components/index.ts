@@ -1,5 +1,5 @@
 /**
- * Reusable atomic UI components for Friday Amanah
+ * Reusable atomic UI components for Barakah
  */
 
 export * from './BrandMark';

@@ -1,7 +1,8 @@
-# Friday Amanah
+# Barakah
 
-**Manage Wealth with Purpose.**
-Part of the Friday ecosystem by Yasin Arafat.
+**Manage Wealth with Purpose.**  
+Official website: [barakah.money](https://barakah.money)  
+Privacy-first Islamic personal finance application.
 
 > **এই ফাইলটা কী** — কাজ থামিয়ে অনেক দিন পরে ফিরে এলে প্রথমে এটাই পড়বেন। এখানে আছে: এখন
 > কোথায় আছি, কী কাজ করছে, কী বাকি, আর কোন কমান্ড দিয়ে আবার শুরু করবেন।
@@ -132,8 +133,8 @@ These block parts of Phase 1B. Details in `docs/17` §6 and `docs/18` §10.
 
 | # | Decision | Why it matters |
 |---|---|---|
-| 1 | Android application ID / iOS bundle ID — `org.royalopencollege.fridayamanah` recommended | **Permanent once published.** Goes into `app.json` |
-| 2 | Deep-link scheme — `fridayamanah://` recommended over `amanah://` | Collision risk on the shorter one |
+| 1 | Android application ID / iOS bundle ID — `money.barakah.app` | **Decided:** configured in `app.json` |
+| 2 | Deep-link scheme — `barakah://` | **Decided:** configured in `app.json` |
 | 3 | Splash composition method | `docs/17` §5.1 — placement only, no artwork change |
 | 4 | Android adaptive icon recomposition | `docs/17` §5.2 — **as-is the launcher would crop the shield** |
 | 5 | Three missing assets: monochrome icon, 96×96 white notification icon, 1200×630 social preview | Needed by Phase 3 and launch |

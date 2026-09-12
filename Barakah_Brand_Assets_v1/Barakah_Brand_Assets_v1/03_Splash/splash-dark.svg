@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 3200" role="img" aria-labelledby="title desc">
+<title id="title">Barakah brand asset</title>
+<desc id="desc">Geometric Barakah B mark with a growth leaf and balanced ledger form.</desc>
+<rect width="1440" height="3200" fill="#071915"/>
+<circle cx="720" cy="1380" r="330" fill="#0E2721"/>
+<g transform="translate(400 1060) scale(.625)"><g id="barakah-symbol">
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="#0B6B57"/>
+  <path d="M330 238 V678 C330 792 414 856 520 856 C632 856 710 782 710 682 C710 580 632 506 522 506 H330"
+        fill="none" stroke="#FFFFFF" stroke-width="78" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M489 421 C522 326 607 291 674 318 C645 402 574 450 489 421 Z" fill="#D6B15B"/>
+  <path d="M510 411 C555 378 598 350 651 326" fill="none" stroke="#0B6B57" stroke-width="14" stroke-linecap="round"/>
+  <path d="M274 608 H392 M274 674 H392" fill="none" stroke="#D6B15B" stroke-width="22" stroke-linecap="round"/>
+</g></g>
+<g transform="translate(325 2045) scale(1.02)"><g id="barakah-wordmark" fill="none" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 18 V126 M18 78 C18 50 39 34 64 34 C92 34 110 54 110 80 C110 107 91 126 63 126 C37 126 18 108 18 82"/>
+  <path d="M139 80 C139 53 158 34 185 34 C213 34 231 54 231 80 C231 107 212 126 185 126 C158 126 139 107 139 80 Z M231 36 V126"/>
+  <path d="M267 36 V126 M267 71 C270 48 287 35 310 35"/>
+  <path d="M340 80 C340 53 359 34 386 34 C414 34 432 54 432 80 C432 107 413 126 386 126 C359 126 340 107 340 80 Z M432 36 V126"/>
+  <path d="M470 18 V126 M470 85 L520 35 M483 72 L527 126"/>
+  <path d="M552 80 C552 53 571 34 598 34 C626 34 644 54 644 80 C644 107 625 126 598 126 C571 126 552 107 552 80 Z M644 36 V126"/>
+  <path d="M681 18 V126 M681 74 C681 50 699 34 722 34 C746 34 760 51 760 76 V126"/>
+</g></g>
+<text x="720" y="2280" text-anchor="middle" fill="#B8C8C1" font-family="sans-serif" font-size="42" letter-spacing="3">PRIVATE • CLEAR • PURPOSEFUL</text>
+</svg>

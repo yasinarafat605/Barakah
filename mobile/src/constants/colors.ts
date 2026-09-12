@@ -1,74 +1,104 @@
 /**
- * Friday Amanah Brand Colors and Semantic Tokens
- * Source of truth: docs/09-design-system.md & Friday_Amanah_Brand_Assets
+ * Barakah Brand Colors and Semantic Tokens
+ * Source of truth: Barakah_Brand_Assets_v1/07_Developer/design-tokens.json & colors.json
  */
 
+export const BarakahColors = {
+  emerald: '#0B6B57', // Primary brand colour
+  midnight: '#102A43', // Midnight navy/green
+  warmIvory: '#F7F8F4', // Calm app background
+  white: '#FFFFFF', // Surfaces, cards, inputs
+  charcoal: '#17211D', // Primary body text
+  mutedSlate: '#5E6C65', // Secondary text
+  gold: '#D6B15B', // Barakah Gold accent (Zakat, savings)
+  softMint: '#E3F3ED', // Soft positive tinted surfaces
+  softSand: '#F5EEDC', // Warm accent surface
+  coolBorder: '#DCE5E1', // Structural borders
+  income: '#087A62', // Semantic income
+  expense: '#B5473A', // Semantic expense
+  receivable: '#2F6FED', // Semantic receivable
+  payable: '#8A5A1E', // Semantic payable
+  zakat: '#7A4FB3', // Semantic Zakat
+  warning: '#B86E00', // Warning state
+  critical: '#B42318', // Critical / destructive
+  darkBackground: '#071915', // Dark mode background
+  darkSurface: '#0E2721', // Dark mode surface
+  darkPrimary: '#5DDBB7', // Dark mode primary action
+} as const;
+
+// Backward-compatibility alias for existing components
 export const BrandColors = {
-  midnightNavy: '#0A1D37', // Ecosystem identity, dark surfaces, headings
-  deepEmerald: '#087A62', // Primary emerald, actions on light surfaces
-  emeraldGreen: '#10A981', // Brand emerald, fills, dark-mode actions
-  freshMint: '#38D3A5', // Highlights, dark-mode accents
-  trustGold: '#D2A74B', // LIMITED accent only
-  mintWhite: '#EAF8F3', // Tinted surfaces, subtle positive backgrounds
-  cloudWhite: '#F8FAFC', // App background
-  charcoalText: '#1F2937', // Body text
-  white: '#FFFFFF', // Cards, sheets, inputs
+  midnightNavy: BarakahColors.midnight, // '#102A43'
+  deepEmerald: BarakahColors.emerald, // '#0B6B57'
+  emeraldGreen: BarakahColors.darkPrimary, // '#5DDBB7'
+  freshMint: BarakahColors.softMint, // '#E3F3ED'
+  trustGold: BarakahColors.gold, // '#D6B15B'
+  mintWhite: BarakahColors.softMint, // '#E3F3ED'
+  cloudWhite: BarakahColors.warmIvory, // '#F7F8F4'
+  charcoalText: BarakahColors.charcoal, // '#17211D'
+  white: BarakahColors.white, // '#FFFFFF'
 } as const;
 
 export const SemanticColors = {
   light: {
-    surface: BrandColors.white,
-    surfaceSunken: BrandColors.cloudWhite,
-    surfaceTinted: BrandColors.mintWhite,
-    surfaceInverse: BrandColors.midnightNavy,
+    surface: BarakahColors.white,
+    surfaceSunken: BarakahColors.warmIvory,
+    surfaceTinted: BarakahColors.softMint,
+    surfaceInverse: BarakahColors.midnight,
 
-    textPrimary: BrandColors.midnightNavy,
-    textBody: BrandColors.charcoalText,
-    textSecondary: '#52606D',
+    textPrimary: BarakahColors.charcoal,
+    textBody: BarakahColors.charcoal,
+    textSecondary: BarakahColors.mutedSlate,
     textTertiary: '#8A94A0',
-    textOnEmerald: BrandColors.white,
-    textOnNavy: BrandColors.cloudWhite,
+    textOnEmerald: BarakahColors.white,
+    textOnNavy: BarakahColors.warmIvory,
 
-    actionPrimary: BrandColors.deepEmerald,
-    actionPrimaryPress: '#06614E',
-    brandFill: BrandColors.emeraldGreen,
-    accentHighlight: BrandColors.freshMint,
-    accentGold: BrandColors.trustGold,
+    actionPrimary: BarakahColors.emerald,
+    actionPrimaryPress: '#085243',
+    brandFill: BarakahColors.emerald,
+    accentHighlight: BarakahColors.softMint,
+    accentGold: BarakahColors.gold,
 
-    border: '#DCE3EA',
+    border: BarakahColors.coolBorder,
     borderStrong: '#B6C1CC',
 
     // Financial direction
-    moneyIn: BrandColors.deepEmerald,
-    moneyOut: '#8A5A1E', // Gold-family brown
-    moneyNeutral: '#52606D',
-    destructive: '#B42318',
+    moneyIn: BarakahColors.income,
+    moneyOut: BarakahColors.expense,
+    receivable: BarakahColors.receivable,
+    payable: BarakahColors.payable,
+    zakat: BarakahColors.zakat,
+    moneyNeutral: BarakahColors.mutedSlate,
+    destructive: BarakahColors.critical,
   },
   dark: {
-    surface: BrandColors.midnightNavy,
-    surfaceSunken: '#06121F',
-    surfaceRaised: '#122C4E',
-    surfaceTinted: '#0C2A24',
+    surface: BarakahColors.darkSurface,
+    surfaceSunken: BarakahColors.darkBackground,
+    surfaceRaised: BarakahColors.midnight,
+    surfaceTinted: '#0E2721',
 
-    textPrimary: BrandColors.cloudWhite,
-    textBody: BrandColors.mintWhite,
+    textPrimary: BarakahColors.warmIvory,
+    textBody: BarakahColors.softMint,
     textSecondary: '#9FB0C0',
     textTertiary: '#6B7C8E',
-    textOnEmerald: BrandColors.white,
-    textOnNavy: BrandColors.cloudWhite,
+    textOnEmerald: BarakahColors.white,
+    textOnNavy: BarakahColors.warmIvory,
 
-    actionPrimary: BrandColors.emeraldGreen,
-    actionPrimaryPress: '#0D8E6C',
-    brandFill: BrandColors.deepEmerald,
-    accentHighlight: BrandColors.freshMint,
-    accentGold: BrandColors.trustGold,
+    actionPrimary: BarakahColors.darkPrimary,
+    actionPrimaryPress: '#46C29E',
+    brandFill: BarakahColors.emerald,
+    accentHighlight: BarakahColors.softMint,
+    accentGold: BarakahColors.gold,
 
     border: '#1E3557',
     borderStrong: '#2A466F',
 
     // Financial direction
-    moneyIn: BrandColors.freshMint,
-    moneyOut: BrandColors.trustGold,
+    moneyIn: BarakahColors.darkPrimary,
+    moneyOut: BarakahColors.gold,
+    receivable: '#6AA2FF',
+    payable: BarakahColors.gold,
+    zakat: '#A77EE3',
     moneyNeutral: '#9FB0C0',
     destructive: '#F97066',
   },

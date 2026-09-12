@@ -1,9 +1,9 @@
 /**
- * Friday Amanah Brand Colors & Theme Constants
- * Source of truth: docs/09-design-system.md & Friday_Amanah_Brand_Assets
+ * Barakah Brand Colors & Theme Constants
+ * Source of truth: Barakah_Brand_Assets_v1/07_Developer/design-tokens.json
  */
 
-import { BrandColors } from './colors';
+import { BarakahColors } from './colors';
 
 export type ThemeMode = 'light' | 'dark';
 
@@ -25,34 +25,34 @@ export interface ThemeColors {
 
 export const Colors: Record<ThemeMode, ThemeColors> = {
   light: {
-    primary: BrandColors.deepEmerald, // #087A62 - AA compliant on light
-    background: BrandColors.cloudWhite, // #F8FAFC - App background
-    surface: BrandColors.white, // #FFFFFF - Cards, sheets, inputs
-    surfaceTinted: BrandColors.mintWhite, // #EAF8F3 - Positive panels
-    text: BrandColors.midnightNavy, // #0A1D37 - 16.14:1 AAA
-    textMuted: '#52606D', // Charcoal tint secondary
+    primary: BarakahColors.emerald, // #0B6B57 - Primary brand action
+    background: BarakahColors.warmIvory, // #F7F8F4 - Calm Warm Ivory background
+    surface: BarakahColors.white, // #FFFFFF - Cards, sheets, inputs
+    surfaceTinted: BarakahColors.softMint, // #E3F3ED - Soft mint tinted panels
+    text: BarakahColors.charcoal, // #17211D - Charcoal primary text (15.6:1 AAA)
+    textMuted: BarakahColors.mutedSlate, // #5E6C65 - Muted slate secondary text
     muted: '#8A94A0', // Tertiary
-    border: '#DCE3EA', // Cloud White shaded
-    error: '#B42318', // Destructive only
-    success: BrandColors.deepEmerald, // Accessible green
-    accent: BrandColors.trustGold, // #D2A74B - Trust Gold accent
-    moneyIn: BrandColors.deepEmerald,
-    moneyOut: '#8A5A1E', // Gold-family brown (doc 09 §3.4)
+    border: BarakahColors.coolBorder, // #DCE5E1 - Cool border
+    error: BarakahColors.critical, // #B42318 - Destructive
+    success: BarakahColors.income, // #087A62 - Accessible income green
+    accent: BarakahColors.gold, // #D6B15B - Barakah Gold accent
+    moneyIn: BarakahColors.income, // #087A62
+    moneyOut: BarakahColors.expense, // #B5473A
   },
   dark: {
-    primary: BrandColors.emeraldGreen, // #10A981 - AA on dark surfaces
-    background: '#06121F', // Navy -40%
-    surface: BrandColors.midnightNavy, // #0A1D37 - Midnight Navy
-    surfaceTinted: '#0C2A24', // Deep Emerald @18% over navy
-    text: BrandColors.cloudWhite, // #F8FAFC - 16.14:1 AAA
+    primary: BarakahColors.darkPrimary, // #5DDBB7 - High contrast action on dark
+    background: BarakahColors.darkBackground, // #071915 - Deep dark background
+    surface: BarakahColors.darkSurface, // #0E2721 - Dark container surface
+    surfaceTinted: BarakahColors.midnight, // #102A43 - Midnight green accent surface
+    text: BarakahColors.warmIvory, // #F7F8F4 - Warm Ivory text (17.5:1 AAA)
     textMuted: '#9FB0C0', // Secondary on dark
     muted: '#6B7C8E', // Tertiary
-    border: '#1E3557', // Border
+    border: '#1E3557', // Dark border
     error: '#F97066', // Accessible destructive on dark
-    success: BrandColors.freshMint, // #38D3A5 - 8.87:1 AAA
-    accent: BrandColors.trustGold, // #D2A74B
-    moneyIn: BrandColors.freshMint,
-    moneyOut: BrandColors.trustGold,
+    success: BarakahColors.darkPrimary, // #5DDBB7 - High contrast green
+    accent: BarakahColors.gold, // #D6B15B - Gold accent
+    moneyIn: BarakahColors.darkPrimary,
+    moneyOut: BarakahColors.gold,
   },
 };
 

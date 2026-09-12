@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "Friday Amanah",
+    "name": "Barakah",
     "tagline": "Manage Wealth with Purpose."
   },
   "nav": {
@@ -94,8 +94,14 @@
     "deleteHasTransactions": "This account contains recorded transactions. Accounts with transactions cannot be deleted.",
     "errors": {
       "nameRequired": "Please enter an account name",
-      "invalidAmount": "Please enter a valid monetary amount",
+      "invalidAmount": "Please enter a valid amount",
       "createFailed": "Failed to create account"
     }
+  },
+  "settings": {
+    "about": "About Barakah",
+    "version": "Version 1.0.0",
+    "website": "barakah.money",
+    "privacyNotice": "Privacy-first Islamic personal finance. All records remain on your device."
   }
 }

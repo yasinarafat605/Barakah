@@ -1,0 +1,22 @@
+:root {
+  --barakah-barakah-emerald: #0B6B57;
+  --barakah-midnight-green: #102A43;
+  --barakah-warm-ivory: #F7F8F4;
+  --barakah-white: #FFFFFF;
+  --barakah-charcoal: #17211D;
+  --barakah-muted-slate: #5E6C65;
+  --barakah-barakah-gold: #D6B15B;
+  --barakah-soft-mint: #E3F3ED;
+  --barakah-soft-sand: #F5EEDC;
+  --barakah-cool-border: #DCE5E1;
+  --barakah-income: #087A62;
+  --barakah-expense: #B5473A;
+  --barakah-receivable: #2F6FED;
+  --barakah-payable: #8A5A1E;
+  --barakah-zakat: #7A4FB3;
+  --barakah-warning: #B86E00;
+  --barakah-critical: #B42318;
+  --barakah-dark-background: #071915;
+  --barakah-dark-surface: #0E2721;
+  --barakah-dark-primary: #5DDBB7;
+}

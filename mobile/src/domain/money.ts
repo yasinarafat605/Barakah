@@ -1,5 +1,5 @@
 /**
- * Friday Amanah Money Domain Value Object
+ * Barakah Money Domain Value Object
  * Strict rules:
  * - ADR-004 / Rule 1: Money is ALWAYS an integer in minor units (paisa/cents).
  *   Never floating-point. No rounding ambiguities.

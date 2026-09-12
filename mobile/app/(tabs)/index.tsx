@@ -27,6 +27,7 @@ export default function HomeScreen() {
             <BrandMark
               variant="horizontal"
               height={36}
+              reverse={colorScheme === 'dark'}
               accessibilityLabel={t('app.name')}
             />
             <Text style={[styles.tagline, { color: theme.textMuted }]}>{t('app.tagline')}</Text>
@@ -35,6 +36,7 @@ export default function HomeScreen() {
             <BrandMark
               variant="icon"
               height={26}
+              reverse={colorScheme === 'dark'}
               accessibilityLabel={t('app.name')}
             />
           </View>

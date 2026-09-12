@@ -1,5 +1,5 @@
 /**
- * Friday Amanah Database Connection Singleton
+ * Barakah Database Connection Singleton
  * Strict adherence to:
  * - Local-first architecture (ADR-001)
  * - PRAGMA foreign_keys = ON;
@@ -10,7 +10,7 @@
 import * as SQLite from 'expo-sqlite';
 import { DatabaseConnection } from './types';
 
-export const DEFAULT_DATABASE_NAME = 'friday_amanah.db';
+export const DEFAULT_DATABASE_NAME = 'barakah.db';
 
 let databaseInstance: DatabaseConnection | null = null;
 
