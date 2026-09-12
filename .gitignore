@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Expo & Local build caches
+.expo/
+dist/
+web-build/
+
+# Environment & Local configs
+.env
+.env*.local
+
+# SQLite & Local DBs
+*.db
+*.db-journal
+*.sqlite
+
+# OS generated files
+Thumbs.db
+.DS_Store
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

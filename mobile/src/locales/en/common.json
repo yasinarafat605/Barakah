@@ -1,0 +1,101 @@
+{
+  "app": {
+    "name": "Friday Amanah",
+    "tagline": "Manage Wealth with Purpose."
+  },
+  "nav": {
+    "home": "Home",
+    "accounts": "Accounts",
+    "transactions": "Transactions",
+    "zakat": "Zakat",
+    "settings": "Settings",
+    "plan": "Plan",
+    "islamic": "Islamic",
+    "explore": "Explore",
+    "quickAdd": "Add"
+  },
+  "actions": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "back": "Back",
+    "done": "Done",
+    "add": "Add",
+    "search": "Search",
+    "filter": "Filter",
+    "viewAll": "View All"
+  },
+  "status": {
+    "loading": "Loading...",
+    "empty": "No data found",
+    "error": "Something went wrong",
+    "success": "Completed successfully"
+  },
+  "modal": {
+    "title": "This is a modal",
+    "goHome": "Go to home screen"
+  },
+  "privacy": {
+    "masked": "••••",
+    "enable": "Enable privacy mode",
+    "disable": "Disable privacy mode"
+  },
+  "currency": {
+    "bdt": "BDT",
+    "symbol": "৳"
+  },
+  "screens": {
+    "home": {
+      "title": "Dashboard",
+      "subtitle": "Wealth & Financial Overview"
+    },
+    "accounts": {
+      "title": "Accounts",
+      "subtitle": "All Accounts & Balances"
+    },
+    "transactions": {
+      "title": "Transactions",
+      "subtitle": "Transaction History & Details"
+    },
+    "zakat": {
+      "title": "Zakat Center",
+      "subtitle": "Zakat Calculation & Planning"
+    },
+    "settings": {
+      "title": "Settings",
+      "subtitle": "App Preferences & Security"
+    }
+  },
+  "accounts": {
+    "totalBalance": "Total Balance",
+    "addAccount": "Add Account",
+    "createAccount": "Create Account",
+    "name": "Account Name",
+    "namePlaceholder": "e.g., Daily Expenses, Main Bank",
+    "initialBalance": "Initial Balance (BDT)",
+    "initialBalancePlaceholder": "0.00",
+    "type": "Account Type",
+    "types": {
+      "cash": "Cash",
+      "bank": "Bank",
+      "mobile_wallet": "Mobile Wallet (bKash/Nagad/Rocket)",
+      "savings": "Savings",
+      "business": "Business",
+      "custom": "Custom"
+    },
+    "emptyTitle": "No Accounts Found",
+    "emptySubtitle": "Add your first account to start tracking your wealth and balances",
+    "transactionsCount": "{{count}} transactions",
+    "deleteTitle": "Delete Account",
+    "deleteConfirm": "Are you sure you want to delete '{{name}}'?",
+    "deleteHasTransactions": "This account contains recorded transactions. Accounts with transactions cannot be deleted.",
+    "errors": {
+      "nameRequired": "Please enter an account name",
+      "invalidAmount": "Please enter a valid monetary amount",
+      "createFailed": "Failed to create account"
+    }
+  }
+}
