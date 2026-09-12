@@ -15,7 +15,7 @@ CREATE TABLE transactions_new (
   id TEXT PRIMARY KEY NOT NULL,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
   category_id TEXT REFERENCES categories(id) ON DELETE RESTRICT,
-  amount INTEGER NOT NULL CHECK (amount > 0),
+  amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer' AND amount > 0),
   type TEXT NOT NULL CHECK (type IN ('income', 'expense', 'transfer')),
   transfer_id TEXT,
   transfer_role TEXT CHECK (transfer_role IN ('source', 'destination')),

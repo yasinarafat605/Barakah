@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   View,
@@ -37,10 +37,10 @@ const ACCOUNT_TYPES: { type: AccountType; icon: keyof typeof Ionicons.glyphMap }
 ];
 
 export default function AccountsScreen() {
+  const { t, i18n } = useTranslation();
+  const currentLocale = (i18n.language?.startsWith('bn') ? 'bn' : 'en') as 'en' | 'bn';
   const colorScheme = useColorScheme() ?? 'light';
   const theme = Colors[colorScheme];
-  const { t, i18n } = useTranslation();
-  const currentLocale = i18n.language === 'en' ? 'en' : 'bn';
 
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
@@ -158,11 +158,22 @@ export default function AccountsScreen() {
     );
   };
 
-  // Derive total balance across all accounts using Money.add()
-  const totalBalance = accounts.reduce(
-    (sum, acc) => sum.add(acc.balance),
-    Money.zero()
-  );
+  // Group totals by currency - never calculate a mixed-currency grand total without exchange-rate conversion
+  const currencyTotals = useMemo(() => {
+    const groups: { [currency: string]: Money } = {};
+    for (const acc of accounts) {
+      const curr = acc.currency || 'BDT';
+      if (!groups[curr]) {
+        groups[curr] = acc.balance;
+      } else {
+        groups[curr] = groups[curr].add(acc.balance);
+      }
+    }
+    return Object.entries(groups).map(([currency, total]) => ({
+      currency,
+      total,
+    }));
+  }, [accounts]);
 
   const getAccountIcon = (type: AccountType): keyof typeof Ionicons.glyphMap => {
     switch (type) {
@@ -217,7 +228,9 @@ export default function AccountsScreen() {
           ]}>
           <View style={styles.totalCardHeader}>
             <Text style={[styles.totalCardLabel, { color: theme.textMuted }]}>
-              {t('accounts.totalBalance')}
+              {currencyTotals.length > 1
+                ? t('accounts.totalBalanceByCurrency')
+                : t('accounts.totalBalance')}
             </Text>
             <View
               style={[
@@ -229,9 +242,28 @@ export default function AccountsScreen() {
               </Text>
             </View>
           </View>
-          <Text style={[styles.totalAmount, { color: theme.text }]}>
-            {totalBalance.format(currentLocale)}
-          </Text>
+          {currencyTotals.length === 0 ? (
+            <Text style={[styles.totalAmount, { color: theme.text }]}>
+              {Money.zero('BDT').format(currentLocale)}
+            </Text>
+          ) : currencyTotals.length === 1 ? (
+            <Text style={[styles.totalAmount, { color: theme.text }]}>
+              {currencyTotals[0].total.format(currentLocale)}
+            </Text>
+          ) : (
+            <View style={styles.multiCurrencyTotalsContainer}>
+              {currencyTotals.map(({ currency, total }) => (
+                <View key={currency} style={styles.multiCurrencyRow}>
+                  <Text style={[styles.currencyLabel, { color: theme.textMuted }]}>
+                    {currency}
+                  </Text>
+                  <Text style={[styles.multiCurrencyAmount, { color: theme.text }]}>
+                    {total.format(currentLocale)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* Accounts List / Empty State */}
@@ -591,6 +623,25 @@ const styles = StyleSheet.create({
   },
   totalAmount: {
     fontSize: 32,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  multiCurrencyTotalsContainer: {
+    gap: 8,
+    marginTop: 4,
+  },
+  multiCurrencyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  currencyLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  multiCurrencyAmount: {
+    fontSize: 20,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },

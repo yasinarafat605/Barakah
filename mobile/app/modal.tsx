@@ -46,7 +46,14 @@ export default function AddTransactionModal() {
   const [destinationAccountId, setDestinationAccountId] = useState<string>('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
   const [note, setNote] = useState('');
-  const [timestamp] = useState<number>(Date.now());
+  
+  // Date & Time state
+  const now = new Date();
+  const defaultDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const defaultTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  const [dateStr, setDateStr] = useState(defaultDateStr);
+  const [timeStr, setTimeStr] = useState(defaultTimeStr);
 
   // Data state
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
@@ -54,6 +61,54 @@ export default function AddTransactionModal() {
   const [loadingData, setLoadingData] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  // Parse and validate date and time into Unix ms timestamp
+  const parsedTimestamp = useMemo<number | null>(() => {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const timePattern = /^\d{2}:\d{2}$/;
+
+    if (!datePattern.test(dateStr.trim()) || !timePattern.test(timeStr.trim())) {
+      return null;
+    }
+
+    const [year, month, day] = dateStr.trim().split('-').map(Number);
+    const [hour, minute] = timeStr.trim().split(':').map(Number);
+
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      return null;
+    }
+
+    const d = new Date(year, month - 1, day, hour, minute);
+    if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) {
+      return null;
+    }
+
+    return d.getTime();
+  }, [dateStr, timeStr]);
+
+  const localizedDateTimePreview = useMemo(() => {
+    if (parsedTimestamp === null) return null;
+    try {
+      const d = new Date(parsedTimestamp);
+      return d.toLocaleString(currentLocale === 'bn' ? 'bn-BD' : 'en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return new Date(parsedTimestamp).toISOString();
+    }
+  }, [parsedTimestamp, currentLocale]);
+
+  const setQuickDate = (quickType: 'today' | 'yesterday') => {
+    const d = new Date();
+    if (quickType === 'yesterday') {
+      d.setDate(d.getDate() - 1);
+    }
+    setDateStr(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  };
 
   // Load accounts and categories
   useEffect(() => {
@@ -132,8 +187,13 @@ export default function AddTransactionModal() {
 
   // Dirty state tracking for discard warning
   const isDirty = useMemo(() => {
-    return amountStr.trim().length > 0 || note.trim().length > 0;
-  }, [amountStr, note]);
+    return (
+      amountStr.trim().length > 0 ||
+      note.trim().length > 0 ||
+      dateStr !== defaultDateStr ||
+      timeStr !== defaultTimeStr
+    );
+  }, [amountStr, note, dateStr, timeStr, defaultDateStr, defaultTimeStr]);
 
   // Discard check on close
   const handleClose = useCallback(() => {
@@ -173,7 +233,19 @@ export default function AddTransactionModal() {
       return;
     }
 
-    // 2. Account validation
+    // 2. Date & Time validation
+    if (parsedTimestamp === null) {
+      setValidationError(t('transactions.invalidDate'));
+      return;
+    }
+
+    // 3. Note length limit validation
+    if (note.length > 200) {
+      setValidationError(t('transactions.errors.noteTooLong'));
+      return;
+    }
+
+    // 4. Account validation
     if (type === 'transfer') {
       if (!sourceAccountId || !destinationAccountId) {
         setValidationError(t('transactions.errors.accountRequired'));
@@ -214,7 +286,7 @@ export default function AddTransactionModal() {
           accountId: selectedAccountId,
           categoryId: selectedCategoryId,
           amountMinor: parsedAmount,
-          occurredAt: timestamp,
+          occurredAt: parsedTimestamp,
           note: note.trim() || undefined,
         });
       } else if (type === 'expense') {
@@ -222,7 +294,7 @@ export default function AddTransactionModal() {
           accountId: selectedAccountId,
           categoryId: selectedCategoryId,
           amountMinor: parsedAmount,
-          occurredAt: timestamp,
+          occurredAt: parsedTimestamp,
           note: note.trim() || undefined,
         });
       } else if (type === 'transfer') {
@@ -230,7 +302,7 @@ export default function AddTransactionModal() {
           sourceAccountId,
           destinationAccountId,
           amountMinor: parsedAmount,
-          occurredAt: timestamp,
+          occurredAt: parsedTimestamp,
           note: note.trim() || undefined,
         });
       }
@@ -566,11 +638,105 @@ export default function AddTransactionModal() {
               </View>
             )}
 
+            {/* Date & Time Picker */}
+            <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={[styles.label, { color: theme.textMuted }]}>
+                  {t('transactions.date')} & {t('transactions.time')}
+                </Text>
+                <View style={styles.quickDateRow}>
+                  <TouchableOpacity
+                    style={[styles.quickDateChip, { backgroundColor: theme.surfaceTinted, borderColor: theme.border }]}
+                    onPress={() => setQuickDate('today')}
+                    accessibilityRole="button">
+                    <Text style={[styles.quickDateText, { color: theme.primary }]}>{t('transactions.today')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.quickDateChip, { backgroundColor: theme.surfaceTinted, borderColor: theme.border }]}
+                    onPress={() => setQuickDate('yesterday')}
+                    accessibilityRole="button">
+                    <Text style={[styles.quickDateText, { color: theme.primary }]}>{t('transactions.yesterday')}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.dateTimeRow}>
+                <View style={styles.dateTimeField}>
+                  <Text style={[styles.inputSubLabel, { color: theme.textMuted }]}>
+                    {t('transactions.date')} (YYYY-MM-DD)
+                  </Text>
+                  <TextInput
+                    style={[
+                      styles.textInput,
+                      {
+                        color: theme.text,
+                        borderColor: parsedTimestamp === null ? theme.error : theme.border,
+                      },
+                    ]}
+                    value={dateStr}
+                    onChangeText={(val) => {
+                      setDateStr(val);
+                      setValidationError(null);
+                    }}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={theme.muted}
+                    maxLength={10}
+                    accessibilityLabel={t('transactions.date')}
+                  />
+                </View>
+
+                <View style={styles.dateTimeField}>
+                  <Text style={[styles.inputSubLabel, { color: theme.textMuted }]}>
+                    {t('transactions.time')} (HH:MM)
+                  </Text>
+                  <TextInput
+                    style={[
+                      styles.textInput,
+                      {
+                        color: theme.text,
+                        borderColor: parsedTimestamp === null ? theme.error : theme.border,
+                      },
+                    ]}
+                    value={timeStr}
+                    onChangeText={(val) => {
+                      setTimeStr(val);
+                      setValidationError(null);
+                    }}
+                    placeholder="HH:MM"
+                    placeholderTextColor={theme.muted}
+                    maxLength={5}
+                    accessibilityLabel={t('transactions.time')}
+                  />
+                </View>
+              </View>
+
+              {parsedTimestamp !== null ? (
+                <View style={styles.previewContainer}>
+                  <Ionicons name="calendar-outline" size={14} color={theme.textMuted} />
+                  <Text style={[styles.datePreviewText, { color: theme.textMuted }]}>
+                    {localizedDateTimePreview}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.previewContainer}>
+                  <Ionicons name="alert-circle-outline" size={14} color={theme.error} />
+                  <Text style={[styles.datePreviewText, { color: theme.error }]}>
+                    {t('transactions.invalidDate')}
+                  </Text>
+                </View>
+              )}
+            </View>
+
             {/* Note Input */}
             <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-              <Text style={[styles.label, { color: theme.textMuted }]}>
-                {t('transactions.note')}
-              </Text>
+              <View style={styles.cardHeaderRow}>
+                <Text style={[styles.label, { color: theme.textMuted }]}>
+                  {t('transactions.note')} ({currentLocale === 'bn' ? 'ঐচ্ছিক' : 'Optional'})
+                </Text>
+                <Text style={[styles.charCountText, { color: note.length > 200 ? theme.error : theme.textMuted }]}>
+                  {note.length}/200
+                </Text>
+              </View>
               <TextInput
                 style={[styles.noteInput, { color: theme.text, borderColor: theme.border }]}
                 placeholder={t('transactions.notePlaceholder')}
@@ -762,4 +928,51 @@ const styles = StyleSheet.create({
     minHeight: 60,
     textAlignVertical: 'top',
   },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  quickDateRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  quickDateChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  quickDateText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  dateTimeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  dateTimeField: {
+    flex: 1,
+    gap: 4,
+  },
+  inputSubLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  textInput: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+  },
+  datePreviewText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  charCountText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
 });
+

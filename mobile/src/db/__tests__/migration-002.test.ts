@@ -224,14 +224,42 @@ describe('Migration 002: Rebuild & Transfer Constraints', () => {
         )
       ).rejects.toThrow(/UNIQUE/i);
 
-      // Inserting destination leg for the same transfer_id succeeds
+      // Inserting first destination leg for the same transfer_id succeeds
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        'tx_d1', 'acc_dest', null, 5000, 'transfer', 'tr_unique_test', 'destination', 'acc_source', now, now
+      );
+
+      // Attempting to insert a second 'destination' leg for the SAME transfer_id must fail unique constraint
       await expect(
         db.runAsync(
           `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, timestamp, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-          'tx_d1', 'acc_dest', null, 5000, 'transfer', 'tr_unique_test', 'destination', 'acc_source', now, now
+          'tx_d2', 'acc_dest', null, 5000, 'transfer', 'tr_unique_test', 'destination', 'acc_source', now, now
         )
-      ).resolves.not.toThrow();
+      ).rejects.toThrow(/UNIQUE/i);
+    });
+
+    it('enforces strict integer storage at the database boundary and rejects fractional values like 10.5', async () => {
+      const now = Date.now();
+      // Inserting a float (10.5) must be rejected by CHECK (typeof(amount) = 'integer')
+      await expect(
+        db.runAsync(
+          `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?);`,
+          'tx_float', 'acc_source', 'cat_inc_salary_wages', 10.5, 'income', now, now
+        )
+      ).rejects.toThrow(/CHECK/i);
+
+      // Inserting 0.01 fractional value must also be rejected
+      await expect(
+        db.runAsync(
+          `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?);`,
+          'tx_fractional', 'acc_source', 'cat_inc_salary_wages', 0.01, 'income', now, now
+        )
+      ).rejects.toThrow(/CHECK/i);
     });
   });
 });

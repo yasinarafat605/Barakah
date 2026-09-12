@@ -71,6 +71,7 @@
   },
   "accounts": {
     "totalBalance": "Total Balance",
+    "totalBalanceByCurrency": "Total Balances by Currency",
     "addAccount": "Add Account",
     "createAccount": "Create Account",
     "name": "Account Name",
@@ -158,6 +159,14 @@
     "deleteConfirmTitle": "Delete Transaction",
     "deleteConfirmMessage": "Are you sure you want to delete this transaction?",
     "deleteTransferMessage": "This will remove both source and destination records for this transfer.",
+    "undo": "Undo",
+    "deletedSuccess": "Transaction deleted",
+    "restoredSuccess": "Transaction restored successfully",
+    "restoreFailed": "Failed to restore transaction",
+    "time": "Time",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "invalidDate": "Please enter a valid date and time",
     "errors": {
       "amountRequired": "Please enter an amount",
       "invalidAmount": "Please enter a valid positive amount",
@@ -168,7 +177,8 @@
       "saveFailed": "Failed to save transaction",
       "deleteFailed": "Failed to delete transaction",
       "noAccounts": "Create an account first before adding transactions",
-      "noAccountsForTransfer": "At least two accounts are required to make a transfer"
+      "noAccountsForTransfer": "At least two accounts are required to make a transfer",
+      "noteTooLong": "Note must be 200 characters or less"
     }
   }
 }

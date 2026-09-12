@@ -113,6 +113,8 @@ export interface TransactionWithDetails extends TransactionRow {
   category_color: string | null;
   related_account_name: string | null;
   related_account_currency: string | null;
+  source_account_name?: string | null;
+  destination_account_name?: string | null;
 }
 
 export interface CreateTransactionInput {
@@ -141,6 +143,7 @@ export interface TransactionFilters {
   startDate?: number;
   endDate?: number;
   includeDeleted?: boolean;
+  groupByTransfer?: boolean;
   limit?: number;
   offset?: number;
 }

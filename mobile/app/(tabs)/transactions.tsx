@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -20,6 +20,7 @@ import { Money } from '@/src/domain/money';
 import {
   getTransactions,
   softDeleteTransaction,
+  restoreTransaction,
   getCategoryDisplayName,
   TransactionWithDetails,
 } from '@/src/db';
@@ -34,6 +35,11 @@ export default function TransactionsScreen() {
   const [transactions, setTransactions] = useState<TransactionWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Undo state for soft-deletion
+  const [undoTx, setUndoTx] = useState<{ id: string; description: string } | null>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadTransactions = useCallback(async () => {
     try {
@@ -74,6 +80,22 @@ export default function TransactionsScreen() {
             try {
               await softDeleteTransaction(tx.id);
               await loadTransactions();
+
+              // Clear any existing undo timer
+              if (undoTimeoutRef.current) {
+                clearTimeout(undoTimeoutRef.current);
+              }
+
+              const desc = isTransfer
+                ? `${tx.source_account_name || tx.account_name} → ${tx.destination_account_name || tx.related_account_name}`
+                : tx.account_name;
+
+              setUndoTx({ id: tx.id, description: desc });
+
+              // Auto-dismiss undo banner after 6 seconds
+              undoTimeoutRef.current = setTimeout(() => {
+                setUndoTx(null);
+              }, 6000);
             } catch (err) {
               console.error('Failed to delete transaction:', err);
               Alert.alert(t('status.error'), t('transactions.errors.deleteFailed'));
@@ -82,6 +104,24 @@ export default function TransactionsScreen() {
         },
       ]
     );
+  };
+
+  const handleUndo = async () => {
+    if (!undoTx || isRestoring) return;
+    setIsRestoring(true);
+    try {
+      await restoreTransaction(undoTx.id);
+      if (undoTimeoutRef.current) {
+        clearTimeout(undoTimeoutRef.current);
+      }
+      setUndoTx(null);
+      await loadTransactions();
+    } catch (err) {
+      console.error('Failed to restore transaction:', err);
+      Alert.alert(t('status.error'), t('transactions.restoreFailed'));
+    } finally {
+      setIsRestoring(false);
+    }
   };
 
   const formatDate = (timestamp: number) => {
@@ -168,20 +208,11 @@ export default function TransactionsScreen() {
       iconName = 'swap-horizontal';
       iconColor = theme.accent;
       typeLabel = t('transactions.transfer');
-
-      if (item.transfer_role === 'source') {
-        sign = '-';
-        amountColor = theme.moneyOut;
-        subtitle = t('transactions.transferTo', {
-          account: item.related_account_name || '',
-        });
-      } else {
-        sign = '+';
-        amountColor = theme.moneyIn;
-        subtitle = t('transactions.transferFrom', {
-          account: item.related_account_name || '',
-        });
-      }
+      sign = '';
+      amountColor = theme.text;
+      const srcName = item.source_account_name || item.account_name;
+      const dstName = item.destination_account_name || item.related_account_name || '';
+      subtitle = `${srcName} → ${dstName}`;
     }
 
     const moneyObj = new Money(item.amount, item.account_currency || 'BDT');
@@ -316,6 +347,39 @@ export default function TransactionsScreen() {
               </View>
             }
           />
+        )}
+
+        {/* Accessible Floating Undo Banner */}
+        {undoTx && (
+          <View
+            style={[
+              styles.undoBanner,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}>
+            <View style={styles.undoTextContainer}>
+              <Ionicons name="checkmark-circle" size={20} color={theme.success} />
+              <Text style={[styles.undoText, { color: theme.text }]} numberOfLines={1}>
+                {t('transactions.deletedSuccess')}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.undoButton, { backgroundColor: theme.surfaceTinted }]}
+              onPress={handleUndo}
+              disabled={isRestoring}
+              accessibilityRole="button"
+              accessibilityLabel={t('transactions.undo')}>
+              {isRestoring ? (
+                <ActivityIndicator size="small" color={theme.primary} />
+              ) : (
+                <>
+                  <Ionicons name="arrow-undo" size={16} color={theme.primary} />
+                  <Text style={[styles.undoButtonText, { color: theme.primary }]}>
+                    {t('transactions.undo')}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
         )}
       </View>
     </SafeAreaView>
@@ -463,6 +527,48 @@ const styles = StyleSheet.create({
   emptyAddButtonText: {
     color: '#FFFFFF',
     fontSize: 14,
+    fontWeight: '600',
+  },
+  undoBanner: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 6,
+    zIndex: 999,
+  },
+  undoTextContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  undoText: {
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
+  },
+  undoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 4,
+  },
+  undoButtonText: {
+    fontSize: 13,
     fontWeight: '600',
   },
 });

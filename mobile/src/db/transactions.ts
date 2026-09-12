@@ -366,7 +366,58 @@ export async function getTransactions(
     ${limitClause} ${offsetClause};
   `;
 
-  return await db.getAllAsync<TransactionWithDetails>(sql, ...params);
+  const rawList = await db.getAllAsync<TransactionWithDetails>(sql, ...params);
+
+  // If groupByTransfer is requested (or default for global list when accountId is not provided)
+  const shouldGroupTransfers = filters?.groupByTransfer ?? (!filters?.accountId);
+
+  if (!shouldGroupTransfers) {
+    return rawList;
+  }
+
+  // Group transfer rows by transfer_id to present one logical transaction on the global feed
+  const result: TransactionWithDetails[] = [];
+  const processedTransferIds = new Set<string>();
+
+  for (const item of rawList) {
+    if (item.type !== 'transfer' || !item.transfer_id) {
+      result.push(item);
+      continue;
+    }
+
+    if (processedTransferIds.has(item.transfer_id)) {
+      continue;
+    }
+
+    processedTransferIds.add(item.transfer_id);
+
+    // Find all rows in rawList with this transfer_id
+    const pairRows = rawList.filter((r) => r.transfer_id === item.transfer_id);
+
+    if (pairRows.length === 1) {
+      // Incomplete transfer pair found
+      if (__DEV__) {
+        console.error(
+          `[Barakah Database Integrity Error] Incomplete transfer pair detected for transfer_id: ${item.transfer_id}. Only row ${item.id} exists.`
+        );
+      }
+      // Never silently drop corrupted or unmatched transfer rows
+      result.push(item);
+      continue;
+    }
+
+    const sourceRow = pairRows.find((r) => r.transfer_role === 'source') ?? pairRows[0];
+    const destRow = pairRows.find((r) => r.transfer_role === 'destination') ?? pairRows[1];
+
+    result.push({
+      ...sourceRow,
+      source_account_name: sourceRow.account_name,
+      destination_account_name: destRow.account_name,
+      related_account_name: destRow.account_name,
+    });
+  }
+
+  return result;
 }
 
 /**
