@@ -53,15 +53,42 @@ jest.mock('../safety', () => ({
 describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
   const mockFs = FileSystem as jest.Mocked<typeof FileSystem>;
   const mockSharing = Sharing as jest.Mocked<typeof Sharing>;
+  const mockStorage = new Map<string, string>();
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockStorage.clear();
     setOperationInProgress(false);
-    mockFs.getInfoAsync.mockResolvedValue({ exists: true, isDirectory: false, modificationTime: Date.now() / 1000 } as any);
+    mockFs.getInfoAsync.mockImplementation(async (uri: string) => {
+      if (mockStorage.has(uri)) return { exists: true, isDirectory: false, modificationTime: Date.now() / 1000 } as any;
+      if (uri.includes('journal')) {
+        return { exists: false, isDirectory: false } as any;
+      }
+      return { exists: true, isDirectory: false, modificationTime: Date.now() / 1000 } as any;
+    });
+    mockFs.writeAsStringAsync.mockImplementation(async (uri: string, content: string) => {
+      mockStorage.set(uri, content);
+    });
+    mockFs.readAsStringAsync.mockImplementation(async (uri: string) => {
+      const val = mockStorage.get(uri);
+      if (val !== undefined) return val;
+      return '{}';
+    });
+    mockFs.copyAsync.mockImplementation(async ({ from, to }: { from: string; to: string }) => {
+      const val = mockStorage.get(from);
+      if (val !== undefined) mockStorage.set(to, val);
+    });
+    mockFs.moveAsync.mockImplementation(async ({ from, to }: { from: string; to: string }) => {
+      const val = mockStorage.get(from);
+      if (val !== undefined) {
+        mockStorage.set(to, val);
+        mockStorage.delete(from);
+      }
+    });
+    mockFs.deleteAsync.mockImplementation(async (uri: string) => {
+      mockStorage.delete(uri);
+    });
     mockFs.readDirectoryAsync.mockResolvedValue([]);
-    mockFs.deleteAsync.mockResolvedValue(undefined);
-    mockFs.moveAsync.mockResolvedValue(undefined);
-    mockFs.copyAsync.mockResolvedValue(undefined);
     mockSharing.isAvailableAsync.mockResolvedValue(true);
     mockSharing.shareAsync.mockResolvedValue(undefined);
   });
@@ -196,7 +223,10 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
   });
 
   it('cleans unreferenced staging artifacts but preserves .old_* recovery databases', async () => {
-    mockFs.getInfoAsync.mockResolvedValue({ exists: true, isDirectory: true } as any);
+    mockFs.getInfoAsync.mockImplementation(async (uri: string) => {
+      if (uri.includes('journal')) return { exists: false, isDirectory: false } as any;
+      return { exists: true, isDirectory: true } as any;
+    });
     mockFs.readDirectoryAsync.mockResolvedValue([
       'staging_restore_123.db',
       'barakah.db.old_456',
@@ -243,7 +273,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
       header: {
         magic: 'BMZ1',
         formatVersion: 1,
-        schemaVersion: 6,
+        schemaVersion: 7,
         createdAtMs: Date.now(),
         kdfId: 1,
         kdfN: 16384,
@@ -260,14 +290,14 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
         manifestVersion: 1,
         createdAtMs: Date.now(),
         appVersion: 1,
-        schemaVersion: 6,
+        schemaVersion: 7,
         rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
         tableChecksums: { accounts: '', categories: '', transactions: '', counterparties: '', debts: '', debt_transactions: '', schema_migrations: '' },
         payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
       },
       preview: {
         createdAtMs: Date.now(),
-        schemaVersion: 6,
+        schemaVersion: 7,
         appVersion: 1,
         rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
         liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
@@ -276,8 +306,8 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
     };
 
     await expect(executeRestore(mockDb, context)).rejects.toThrow(RestoreError);
-    // Verified that moveAsync was called to restore backupOldDbUri back to activeDbUri
-    expect(mockFs.moveAsync).toHaveBeenCalledWith(
+    // Verified that copyAsync was called to restore backupOldDbUri back to activeDbUri
+    expect(mockFs.copyAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         to: 'file:///mock/app/files/SQLite/barakah.db',
       })

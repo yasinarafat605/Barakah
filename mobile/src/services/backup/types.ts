@@ -20,8 +20,8 @@ import {
 export const BACKUP_MAGIC_BYTES = new Uint8Array([0x42, 0x4D, 0x5A, 0x31]); // 'BMZ1'
 export const BACKUP_FORMAT_VERSION = 1;
 export const MIN_RESTORABLE_SCHEMA_VERSION = 4;
-export const MAX_RESTORABLE_SCHEMA_VERSION = 6;
-export const CURRENT_DATABASE_SCHEMA_VERSION = 6;
+export const MAX_RESTORABLE_SCHEMA_VERSION = 7;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 7;
 export const APP_VERSION_CODE = 1; // 1.0.0
 
 export const HEADER_SIZE_BYTES = 60;
@@ -139,6 +139,7 @@ export type RestorePromotionPhase =
   | 'complete';
 
 export interface RestoreJournal {
+  journalVersion: 1;
   operationId: string;
   activePath: string;
   stagingPath: string;
@@ -147,6 +148,12 @@ export interface RestoreJournal {
   expectedDestinationChecksum: string;
   phase: RestorePromotionPhase;
   updatedAtMs: number;
+}
+
+export interface RestoreJournalEnvelope {
+  version: 1;
+  checksum: string;
+  payload: RestoreJournal;
 }
 
 export type RollbackOutcome =

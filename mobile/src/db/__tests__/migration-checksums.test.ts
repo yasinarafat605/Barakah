@@ -1,13 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { CANONICAL_MIGRATION_CHECKSUMS } from '../migrations/006_backup_integrity_hardening';
+import { CANONICAL_MIGRATION_CHECKSUMS } from '../migrations/registry';
 
 describe('Migration Canonical Checksums CI Verification', () => {
   const migrationsDir = path.resolve(__dirname, '../migrations');
 
   it('reproducibly matches all canonical migration checksums against .sql files', () => {
-    for (let version = 1; version <= 6; version++) {
+    for (let version = 1; version <= 7; version++) {
       const expectedChecksum = CANONICAL_MIGRATION_CHECKSUMS[version];
       expect(expectedChecksum).toBeDefined();
       expect(expectedChecksum).not.toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'); // Must not be empty string

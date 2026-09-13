@@ -19,14 +19,18 @@ import * as SQLite from 'expo-sqlite';
 import { DatabaseConnection } from '../../db/types';
 import { getDatabase, closeDatabase, runExclusiveTransaction } from '../../db/client';
 import { runMigrations } from '../../db/migrations';
-import { CANONICAL_MIGRATION_CHECKSUMS } from '../../db/migrations/006_backup_integrity_hardening';
+import { CANONICAL_MIGRATION_CHECKSUMS } from '../../db/migrations/registry';
+import * as Crypto from 'expo-crypto';
 import {
   RestoreError,
   RestorePreview,
   BackupHeader,
   BackupManifest,
   BackupPayloadData,
+  TableChecksums,
   RestoreJournal,
+  RestoreJournalEnvelope,
+  RestorePromotionPhase,
   PORTABLE_FINANCIAL_TABLES,
   CURRENT_DATABASE_SCHEMA_VERSION,
   HEADER_SIZE_BYTES,
@@ -38,12 +42,15 @@ import {
   parseHeader,
   deriveKeyFromPassphrase,
   decryptPayloadWithHeader,
+  computeSha256Hex,
+  getSecureRandomBytes,
 } from './crypto';
 import {
   decompressPayload,
   validateManifestStructure,
   validateHeaderManifestConsistency,
   computeTableChecksums,
+  canonicalJsonStringify,
 } from './serializer';
 import {
   validateAccountRow,
@@ -68,46 +75,331 @@ export interface DecryptedBackupContext {
   envelopeBytes: Uint8Array;
 }
 
-export const RESTORE_JOURNAL_FILENAME = 'restore_journal.json';
+export const RESTORE_JOURNAL_FILENAME = 'barakah_restore_journal.json';
+export const RESTORE_JOURNAL_TMP_FILENAME = 'barakah_restore_journal.json.tmp';
+export const RESTORE_JOURNAL_BAK_FILENAME = 'barakah_restore_journal.json.bak';
+export const LEGACY_RESTORE_JOURNAL_FILENAME = 'restore_journal.json';
 
 export function getRestoreJournalUri(): string | null {
   if (!FileSystem.documentDirectory) return null;
   return `${FileSystem.documentDirectory}SQLite/${RESTORE_JOURNAL_FILENAME}`;
 }
 
-export async function writeRestoreJournal(journal: RestoreJournal): Promise<void> {
-  const uri = getRestoreJournalUri();
-  if (!uri) return;
-  const content = JSON.stringify(journal, null, 2);
-  await FileSystem.writeAsStringAsync(uri, content);
+export function getRestoreJournalTmpUri(): string | null {
+  if (!FileSystem.documentDirectory) return null;
+  return `${FileSystem.documentDirectory}SQLite/${RESTORE_JOURNAL_TMP_FILENAME}`;
+}
+
+export function getRestoreJournalBakUri(): string | null {
+  if (!FileSystem.documentDirectory) return null;
+  return `${FileSystem.documentDirectory}SQLite/${RESTORE_JOURNAL_BAK_FILENAME}`;
+}
+
+export function getLegacyRestoreJournalUri(): string | null {
+  if (!FileSystem.documentDirectory) return null;
+  return `${FileSystem.documentDirectory}SQLite/${LEGACY_RESTORE_JOURNAL_FILENAME}`;
+}
+
+/**
+ * Generates a cryptographically random operation identifier.
+ */
+export function generateSecureOperationId(): string {
+  if (typeof (Crypto as any)?.randomUUID === 'function') {
+    try {
+      return `restore_${(Crypto as any).randomUUID()}`;
+    } catch {}
+  }
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    try {
+      return `restore_${globalThis.crypto.randomUUID()}`;
+    } catch {}
+  }
+  const bytes = getSecureRandomBytes(16);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return `restore_${hex}`;
+}
+
+/**
+ * Computes a deterministic SHA-256 digest covering all portable financial table checksums.
+ */
+export function computeManifestDigest(tableChecksums: TableChecksums | Record<string, string>): string {
+  const parts = PORTABLE_FINANCIAL_TABLES.map((t) => `${t}:${(tableChecksums as any)[t] || ''}`).join(';');
+  return computeSha256Hex(parts);
+}
+
+/**
+ * Restricts every path to approved application SQLite and snapshot directories,
+ * rejecting '..', foreign directories, backslashes, and unexpected filenames.
+ */
+export function validateJournalPath(
+  path: unknown,
+  allowedKinds: ('active' | 'staging' | 'recoveryOld' | 'snapshot')[]
+): boolean {
+  if (typeof path !== 'string' || !path.trim()) return false;
+  if (!FileSystem.documentDirectory) return false;
+
+  // Reject path traversal and backslashes
+  if (path.includes('..') || path.includes('\\')) return false;
+
+  const baseDir = `${FileSystem.documentDirectory}SQLite/`;
+  const snapshotsDir = `${FileSystem.documentDirectory}SQLite/safety_snapshots/`;
+
+  const isInBaseDir = path.startsWith(baseDir);
+  const isInSnapshotsDir = path.startsWith(snapshotsDir);
+
+  if (!isInBaseDir && !isInSnapshotsDir) return false;
+
+  const fileName = path.split('/').pop();
+  if (!fileName) return false;
+
+  return allowedKinds.some((kind) => {
+    switch (kind) {
+      case 'active':
+        return fileName === 'barakah.db' || fileName.endsWith('.db');
+      case 'staging':
+        return fileName.startsWith('staging_restore_') && fileName.endsWith('.db');
+      case 'recoveryOld':
+        return fileName.startsWith('barakah.db.old_');
+      case 'snapshot':
+        return (
+          fileName.startsWith('snapshot_') ||
+          fileName.startsWith('barakah_') ||
+          fileName.endsWith('.db')
+        );
+      default:
+        return false;
+    }
+  });
+}
+
+function validateJournalEnvelopeContent(content: string): {
+  valid: boolean;
+  journal?: RestoreJournal;
+  error?: string;
+} {
+  if (!content || !content.trim()) {
+    return { valid: false, error: 'Empty journal content' };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err: any) {
+    return { valid: false, error: `Invalid JSON: ${err?.message || 'Parse error'}` };
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return { valid: false, error: 'Journal root is not an object' };
+  }
+
+  const root = parsed as Record<string, unknown>;
+  let payload: unknown;
+
+  if (root.version === 1 && typeof root.checksum === 'string' && root.payload) {
+    // Envelope format
+    const expectedChecksum = computeSha256Hex(canonicalJsonStringify(root.payload));
+    if (root.checksum !== expectedChecksum) {
+      return { valid: false, error: 'Journal checksum mismatch' };
+    }
+    payload = root.payload;
+  } else if (typeof root.operationId === 'string' && typeof root.phase === 'string') {
+    // Legacy un-enveloped format
+    payload = root;
+  } else {
+    return { valid: false, error: 'Missing required journal fields or envelope' };
+  }
+
+  const j = payload as Partial<RestoreJournal>;
+  if (j.journalVersion !== undefined && j.journalVersion !== 1) {
+    return { valid: false, error: 'Unsupported journalVersion' };
+  }
+  if (typeof j.operationId !== 'string' || !j.operationId.trim()) {
+    return { valid: false, error: 'Missing or invalid operationId' };
+  }
+  const validPhases: RestorePromotionPhase[] = [
+    'initialized',
+    'active_moved_to_old',
+    'staging_moved_to_active',
+    'activation_verified',
+    'complete',
+  ];
+  if (!j.phase || !validPhases.includes(j.phase)) {
+    return { valid: false, error: `Invalid phase: ${String(j.phase)}` };
+  }
+  if (!validateJournalPath(j.activePath, ['active'])) {
+    return { valid: false, error: 'Invalid or unsafe activePath' };
+  }
+  if (j.phase !== 'complete') {
+    if (!validateJournalPath(j.stagingPath, ['staging'])) {
+      return { valid: false, error: 'Invalid or unsafe stagingPath' };
+    }
+    if (!validateJournalPath(j.recoveryOldPath, ['recoveryOld'])) {
+      return { valid: false, error: 'Invalid or unsafe recoveryOldPath' };
+    }
+  }
+  if (j.safetySnapshotPath !== null && !validateJournalPath(j.safetySnapshotPath, ['snapshot'])) {
+    return { valid: false, error: 'Invalid or unsafe safetySnapshotPath' };
+  }
+  if (typeof j.expectedDestinationChecksum !== 'string' || !j.expectedDestinationChecksum.trim()) {
+    return { valid: false, error: 'Missing or invalid expectedDestinationChecksum' };
+  }
+  if (typeof j.updatedAtMs !== 'number' || isNaN(j.updatedAtMs) || j.updatedAtMs <= 0) {
+    return { valid: false, error: 'Missing or invalid updatedAtMs' };
+  }
+
+  return {
+    valid: true,
+    journal: {
+      journalVersion: 1,
+      operationId: j.operationId!,
+      activePath: j.activePath!,
+      stagingPath: j.stagingPath || '',
+      recoveryOldPath: j.recoveryOldPath || '',
+      safetySnapshotPath: j.safetySnapshotPath ?? null,
+      expectedDestinationChecksum: j.expectedDestinationChecksum!,
+      phase: j.phase!,
+      updatedAtMs: j.updatedAtMs!,
+    },
+  };
+}
+
+export interface JournalReadResult {
+  journal: RestoreJournal | null;
+  corrupt: boolean;
+  errorDetail?: string;
+  sourceUri?: string;
+}
+
+/**
+ * Reads and validates restore journal from filesystem.
+ * If corrupt, truncated, or invalid data is encountered, flags corrupt: true.
+ * Fallback to .bak generation is attempted if the primary journal is damaged.
+ */
+export async function readRestoreJournalWithStatus(): Promise<JournalReadResult> {
+  const journalUri = getRestoreJournalUri();
+  const bakUri = getRestoreJournalBakUri();
+  const legacyUri = getLegacyRestoreJournalUri();
+  const tmpUri = getRestoreJournalTmpUri();
+
+  if (!journalUri) return { journal: null, corrupt: false };
+
+  const candidates: { uri: string | null; isBak?: boolean }[] = [
+    { uri: journalUri },
+    { uri: bakUri, isBak: true },
+    { uri: legacyUri },
+    { uri: tmpUri },
+  ];
+
+  let anyFileExists = false;
+  let firstCorruptionError: string | undefined;
+
+  for (const candidate of candidates) {
+    if (!candidate.uri) continue;
+    try {
+      const info = await FileSystem.getInfoAsync(candidate.uri);
+      if (!info.exists) continue;
+      anyFileExists = true;
+
+      const content = await FileSystem.readAsStringAsync(candidate.uri);
+      const validation = validateJournalEnvelopeContent(content);
+      if (validation.valid && validation.journal) {
+        return {
+          journal: validation.journal,
+          corrupt: false,
+          sourceUri: candidate.uri,
+        };
+      } else {
+        if (!firstCorruptionError) {
+          firstCorruptionError = validation.error;
+        }
+      }
+    } catch (err: any) {
+      anyFileExists = true;
+      if (!firstCorruptionError) {
+        firstCorruptionError = err?.message || 'Read failure';
+      }
+    }
+  }
+
+  if (anyFileExists) {
+    return {
+      journal: null,
+      corrupt: true,
+      errorDetail: firstCorruptionError || 'Invalid or unreadable journal format',
+    };
+  }
+
+  return { journal: null, corrupt: false };
 }
 
 export async function readRestoreJournal(): Promise<RestoreJournal | null> {
-  const uri = getRestoreJournalUri();
-  if (!uri) return null;
-  try {
-    const info = await FileSystem.getInfoAsync(uri);
-    if (!info.exists) return null;
-    const content = await FileSystem.readAsStringAsync(uri);
-    return JSON.parse(content) as RestoreJournal;
-  } catch {
-    return null;
+  const result = await readRestoreJournalWithStatus();
+  return result.journal;
+}
+
+/**
+ * Writes the restore journal with two-phase commit:
+ * 1. Write envelope ({ version: 1, checksum, payload }) to .tmp file.
+ * 2. Copy current journal to .bak if it exists (retaining previous valid generation).
+ * 3. Safely move .tmp file to active journal.
+ */
+export async function writeRestoreJournal(journal: RestoreJournal): Promise<void> {
+  const journalUri = getRestoreJournalUri();
+  const tmpUri = getRestoreJournalTmpUri();
+  const bakUri = getRestoreJournalBakUri();
+  if (!journalUri || !tmpUri || !bakUri) return;
+
+  const envelope: RestoreJournalEnvelope = {
+    version: 1,
+    checksum: computeSha256Hex(canonicalJsonStringify(journal)),
+    payload: journal,
+  };
+  const content = JSON.stringify(envelope, null, 2);
+
+  // 1. Write to temporary file
+  await FileSystem.writeAsStringAsync(tmpUri, content);
+
+  // 2. Retain previous valid journal generation in .bak
+  const info = await FileSystem.getInfoAsync(journalUri);
+  if (info.exists) {
+    try {
+      await FileSystem.copyAsync({ from: journalUri, to: bakUri });
+    } catch {
+      // Non-fatal backup copy
+    }
   }
+
+  // 3. Promote temporary file to primary journal
+  await FileSystem.moveAsync({ from: tmpUri, to: journalUri });
 }
 
 export async function clearRestoreJournal(): Promise<void> {
-  const uri = getRestoreJournalUri();
-  if (!uri) return;
-  try {
-    await FileSystem.deleteAsync(uri, { idempotent: true });
-  } catch {
-    // Non-fatal
+  const journalUri = getRestoreJournalUri();
+  const tmpUri = getRestoreJournalTmpUri();
+  const bakUri = getRestoreJournalBakUri();
+  const legacyUri = getLegacyRestoreJournalUri();
+
+  if (journalUri) {
+    try { await FileSystem.deleteAsync(journalUri, { idempotent: true }); } catch {}
+  }
+  if (tmpUri) {
+    try { await FileSystem.deleteAsync(tmpUri, { idempotent: true }); } catch {}
+  }
+  if (bakUri) {
+    try { await FileSystem.deleteAsync(bakUri, { idempotent: true }); } catch {}
+  }
+  if (legacyUri) {
+    try { await FileSystem.deleteAsync(legacyUri, { idempotent: true }); } catch {}
   }
 }
 
 /**
  * Removes disposable staging artifacts.
  * Rules:
+ * - If journal is corrupt, preserve all recovery candidates.
  * - Delete disposable staging artifacts only when no active restore journal references them.
  * - Never delete .old_* recovery databases solely because of their filename.
  * - Verify the active database and journal state first.
@@ -120,12 +412,16 @@ export async function cleanStaleStagingArtifacts(): Promise<void> {
     const info = await FileSystem.getInfoAsync(sqliteDir);
     if (!info.exists) return;
 
-    const journal = await readRestoreJournal();
+    const journalResult = await readRestoreJournalWithStatus();
+    if (journalResult.corrupt) {
+      return;
+    }
+
     const protectedPaths = new Set<string>();
-    if (journal) {
-      if (journal.stagingPath) protectedPaths.add(journal.stagingPath);
-      if (journal.recoveryOldPath) protectedPaths.add(journal.recoveryOldPath);
-      if (journal.safetySnapshotPath) protectedPaths.add(journal.safetySnapshotPath);
+    if (journalResult.journal) {
+      if (journalResult.journal.stagingPath) protectedPaths.add(journalResult.journal.stagingPath);
+      if (journalResult.journal.recoveryOldPath) protectedPaths.add(journalResult.journal.recoveryOldPath);
+      if (journalResult.journal.safetySnapshotPath) protectedPaths.add(journalResult.journal.safetySnapshotPath);
     }
 
     const files = await FileSystem.readDirectoryAsync(sqliteDir);
@@ -133,7 +429,6 @@ export async function cleanStaleStagingArtifacts(): Promise<void> {
       const fullPath = `${sqliteDir}${f}`;
 
       // NEVER delete barakah.db.old_* files in stale artifact cleanup!
-      // Old recovery databases must be preserved unless confirmed activation or rollback has occurred.
       if (f.startsWith('barakah.db.old_')) {
         continue;
       }
@@ -199,11 +494,83 @@ async function verifyCandidateDatabase(dbPath: string): Promise<boolean> {
 }
 
 /**
+ * Verifies that a database file exists and matches the expected destination manifest digest.
+ */
+async function verifyDatabaseManifestDigest(dbPath: string, expectedDigest: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(dbPath);
+    if (!info.exists) return false;
+
+    if (!FileSystem.documentDirectory) return false;
+    const sqliteDir = `${FileSystem.documentDirectory}SQLite/`;
+    let dbName = '';
+    let tempUri: string | null = null;
+
+    if (dbPath.startsWith(sqliteDir)) {
+      dbName = dbPath.slice(sqliteDir.length);
+    } else {
+      dbName = `temp_digest_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.db`;
+      tempUri = `${sqliteDir}${dbName}`;
+      await FileSystem.copyAsync({ from: dbPath, to: tempUri });
+    }
+
+    const testDb = await SQLite.openDatabaseAsync(dbName);
+    try {
+      const accounts = await testDb.getAllAsync<any>('SELECT * FROM accounts ORDER BY id ASC;');
+      const categories = await testDb.getAllAsync<any>('SELECT * FROM categories ORDER BY id ASC;');
+      const transactions = await testDb.getAllAsync<any>('SELECT * FROM transactions ORDER BY id ASC;');
+      const counterparties = await testDb.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
+      const debts = await testDb.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
+      const debt_transactions = await testDb.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
+      const schema_migrations = await testDb.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
+
+      await testDb.closeAsync();
+      if (tempUri) {
+        await FileSystem.deleteAsync(tempUri, { idempotent: true });
+        await FileSystem.deleteAsync(`${tempUri}-wal`, { idempotent: true });
+        await FileSystem.deleteAsync(`${tempUri}-shm`, { idempotent: true });
+      }
+
+      const checksums = computeTableChecksums({
+        accounts,
+        categories,
+        transactions,
+        counterparties,
+        debts,
+        debt_transactions,
+        schema_migrations,
+      });
+
+      const computedDigest = computeManifestDigest(checksums);
+      return computedDigest === expectedDigest || expectedDigest === checksums.transactions;
+    } catch {
+      try { await testDb.closeAsync(); } catch {}
+      if (tempUri) {
+        await FileSystem.deleteAsync(tempUri, { idempotent: true });
+      }
+      return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Detects an incomplete restore journal on application startup and recovers safely according to durable phase.
  * Must be executed before opening or migrating the live database.
  */
 export async function recoverFromInterruptedRestore(): Promise<void> {
-  const journal = await readRestoreJournal();
+  const journalResult = await readRestoreJournalWithStatus();
+
+  // If corrupt journal data is detected, NEVER interpret as "no journal"!
+  if (journalResult.corrupt) {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      `Corrupt or invalid restore journal detected: ${journalResult.errorDetail || 'unreadable format'}. Recovery files preserved. Manual recovery required.`
+    );
+  }
+
+  const journal = journalResult.journal;
   if (!journal) return;
 
   const activeDbUri = journal.activePath || getActiveDatabaseUri();
@@ -236,22 +603,57 @@ export async function recoverFromInterruptedRestore(): Promise<void> {
     }
   };
 
-  // Phase 'activation_verified': Staging was promoted and verified before interruption.
-  if (journal.phase === 'activation_verified') {
+  // Phase 'initialized': Active database was never moved!
+  // "For initialized, verify the untouched active database before restoring a snapshot."
+  if (journal.phase === 'initialized') {
     const activeValid = await verifyCandidateDatabase(activeDbUri);
     if (activeValid) {
-      if (recoveryOldUri) {
-        await FileSystem.deleteAsync(recoveryOldUri, { idempotent: true });
-      }
-      if (journal.stagingPath) {
-        await FileSystem.deleteAsync(journal.stagingPath, { idempotent: true });
-      }
       await clearRestoreJournal();
       return;
     }
+    // If active database was not valid, try restoring from safetySnapshotUri
+    if (safetySnapshotUri) {
+      const snapValid = await verifyCandidateDatabase(safetySnapshotUri);
+      if (snapValid) {
+        const restored = await restoreFromPath(safetySnapshotUri);
+        if (restored) {
+          await clearRestoreJournal();
+          return;
+        }
+      }
+    }
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      `An interrupted restore operation in phase 'initialized' was detected (Operation ID: ${journal.operationId}), but active database and safety snapshot failed verification. All recovery files have been preserved.`
+    );
   }
 
-  // For incomplete promotion phases ('initialized', 'active_moved_to_old', 'staging_moved_to_active'):
+  // Phase 'activation_verified': Staging was promoted and verified before interruption.
+  // "For activation_verified, verify the expected destination manifest digest before deleting the old database."
+  if (journal.phase === 'activation_verified') {
+    const activeValid = await verifyCandidateDatabase(activeDbUri);
+    if (activeValid) {
+      const digestMatches = await verifyDatabaseManifestDigest(activeDbUri, journal.expectedDestinationChecksum);
+      if (digestMatches) {
+        if (recoveryOldUri) {
+          await FileSystem.deleteAsync(recoveryOldUri, { idempotent: true });
+        }
+        if (journal.stagingPath) {
+          await FileSystem.deleteAsync(journal.stagingPath, { idempotent: true });
+        }
+        await clearRestoreJournal();
+        return;
+      }
+    }
+    // If destination digest does not match, do NOT delete recoveryOldUri!
+    // Fails closed with RESTORE_ERR_RECOVERY_REQUIRED and preserves old database!
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      `An interrupted restore operation in phase 'activation_verified' was detected (Operation ID: ${journal.operationId}), but active database manifest digest mismatch or integrity failure occurred. Old database has been preserved.`
+    );
+  }
+
+  // For incomplete promotion phases ('active_moved_to_old', 'staging_moved_to_active'):
   // Prefer the verified original database!
   let recovered = false;
 
@@ -276,15 +678,6 @@ export async function recoverFromInterruptedRestore(): Promise<void> {
         await clearRestoreJournal();
         return;
       }
-    }
-  }
-
-  // Candidate 3: If phase was 'initialized', active database was never moved
-  if (!recovered && journal.phase === 'initialized') {
-    const activeValid = await verifyCandidateDatabase(activeDbUri);
-    if (activeValid) {
-      await clearRestoreJournal();
-      return;
     }
   }
 
@@ -718,7 +1111,7 @@ export async function executeRestore(
 
   setOperationInProgress(true);
 
-  const operationId = `restore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const operationId = generateSecureOperationId();
   const stagingDbName = `staging_restore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.db`;
   let stagingDb: DatabaseConnection | null = null;
   let safetySnapshotUri: string | null = null;
@@ -726,6 +1119,7 @@ export async function executeRestore(
   let stagingDbUri: string | null = null;
   let activeDbUri: string | null = null;
   let currentJournal: RestoreJournal | null = null;
+  let preserveStaging = false;
 
   try {
     // 0. Remove unreferenced stale staging artifacts
@@ -760,18 +1154,31 @@ export async function executeRestore(
       backupOldDbUri = `${sqliteDir}barakah.db.old_${Date.now()}`;
 
       if (activeDbUri) {
+        // Destination manifest digest covering all portable financial tables
+        const manifestDigest = computeManifestDigest(context.manifest.tableChecksums);
+
         // Persist restore journal before first filesystem move
         currentJournal = {
+          journalVersion: 1,
           operationId,
           activePath: activeDbUri,
           stagingPath: stagingDbUri,
           recoveryOldPath: backupOldDbUri,
           safetySnapshotPath: safetySnapshotUri,
-          expectedDestinationChecksum: context.manifest.tableChecksums.transactions,
+          expectedDestinationChecksum: manifestDigest,
           phase: 'initialized',
           updatedAtMs: Date.now(),
         };
         await writeRestoreJournal(currentJournal);
+
+        // Verify valid journal persisted before moving or deleting any database
+        const journalCheck = await readRestoreJournalWithStatus();
+        if (!journalCheck.journal || journalCheck.journal.operationId !== operationId) {
+          throw new RestoreError(
+            'RESTORE_ERR_PROMOTION_FAILED',
+            'Failed to safely persist restore journal before promotion.'
+          );
+        }
 
         // Clean stale WAL and SHM files
         await FileSystem.deleteAsync(`${activeDbUri}-wal`, { idempotent: true });
@@ -813,11 +1220,14 @@ export async function executeRestore(
       await writeRestoreJournal(currentJournal);
     }
 
-    // 8. Activation confirmed: safely prune old recovery database and clear journal
+    // 8. Activation confirmed: safely prune old recovery database only after confirmed verification
     if (backupOldDbUri && FileSystem.documentDirectory) {
       await FileSystem.deleteAsync(backupOldDbUri, { idempotent: true });
       backupOldDbUri = null;
     }
+
+    // Verify live DB reopened and accessible before clearing journal
+    await newLiveDb.getFirstAsync('SELECT 1;');
     await clearRestoreJournal();
     currentJournal = null;
   } catch (err: unknown) {
@@ -855,7 +1265,7 @@ export async function executeRestore(
         if (backupOldDbUri) {
           const backupInfo = await FileSystem.getInfoAsync(backupOldDbUri);
           if (backupInfo.exists) {
-            await FileSystem.moveAsync({
+            await FileSystem.copyAsync({
               from: backupOldDbUri,
               to: activeDbUri,
             });
@@ -885,6 +1295,9 @@ export async function executeRestore(
     }
 
     if (rollbackVerified) {
+      if (backupOldDbUri) {
+        try { await FileSystem.deleteAsync(backupOldDbUri, { idempotent: true }); } catch {}
+      }
       await clearRestoreJournal();
       throw new RestoreError(
         'RESTORE_ERR_ROLLBACK_SUCCEEDED',
@@ -907,6 +1320,9 @@ export async function executeRestore(
       // Non-fatal check
     }
 
+    // Do not delete referenced staging data in finally after manual-recovery or rollback-failed outcomes
+    preserveStaging = true;
+
     if (manualRecoveryAvailable) {
       // Preserve all recovery files and journal
       throw new RestoreError(
@@ -922,12 +1338,14 @@ export async function executeRestore(
       'activation_failed_rollback_failed'
     );
   } finally {
-    if (stagingDbUri && FileSystem.documentDirectory) {
-      await FileSystem.deleteAsync(stagingDbUri, { idempotent: true });
-      await FileSystem.deleteAsync(`${stagingDbUri}-wal`, { idempotent: true });
-      await FileSystem.deleteAsync(`${stagingDbUri}-shm`, { idempotent: true });
+    if (!preserveStaging) {
+      if (stagingDbUri && FileSystem.documentDirectory) {
+        await FileSystem.deleteAsync(stagingDbUri, { idempotent: true });
+        await FileSystem.deleteAsync(`${stagingDbUri}-wal`, { idempotent: true });
+        await FileSystem.deleteAsync(`${stagingDbUri}-shm`, { idempotent: true });
+      }
+      await cleanStaleStagingArtifacts();
     }
-    await cleanStaleStagingArtifacts();
     setOperationInProgress(false);
   }
 }

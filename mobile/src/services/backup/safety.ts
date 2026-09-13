@@ -125,6 +125,12 @@ async function verifySnapshotIntegrity(snapshotName: string, snapshotUri: string
     if (!result || result.integrity_check !== 'ok') {
       throw new Error(`Snapshot failed SQLite integrity check: ${result?.integrity_check ?? 'unknown'}`);
     }
+    if (typeof snapDb.getAllAsync === 'function') {
+      const fkViolations = await snapDb.getAllAsync('PRAGMA foreign_key_check;');
+      if (fkViolations && fkViolations.length > 0) {
+        throw new Error(`Snapshot has ${fkViolations.length} foreign key violation(s).`);
+      }
+    }
   } catch (err: unknown) {
     // Delete corrupt snapshot
     await FileSystem.deleteAsync(snapshotUri, { idempotent: true });
@@ -144,8 +150,13 @@ async function verifySnapshotIntegrity(snapshotName: string, snapshotUri: string
 }
 
 /**
- * Creates snapshot file using native SQLite backup API when available,
- * with WAL checkpoint + copyAsync fallback.
+ * Creates snapshot file using native SQLite backup API when available (Android, iOS, macOS, tvOS).
+ * Supported Platforms:
+ * - Native (Android, iOS, macOS, tvOS): Executes SQLite C-level sqlite3_backup_* API via SQLite.backupDatabaseAsync.
+ *   Guarantees point-in-time consistency even under concurrent writes. If backupDatabaseAsync throws, fails closed!
+ * - Fallback (Web / Node Test environments without native backup bindings):
+ *   Detects absence of backupDatabaseAsync (typeof !== 'function'). Checkpoints WAL (PRAGMA wal_checkpoint(TRUNCATE)),
+ *   copies database, and verifies integrity and foreign keys.
  */
 async function createSnapshotFromLiveDatabase(
   db: DatabaseConnection,
@@ -153,22 +164,26 @@ async function createSnapshotFromLiveDatabase(
   snapshotName: string,
   snapshotUri: string
 ): Promise<void> {
-  let backupSuccessful = false;
-
-  // Attempt native SQLite backup API if available (handles concurrent writes transactionally)
-  if (typeof (SQLite as any).backupDatabaseAsync === 'function') {
+  // 1. Native platform path: typed SQLite.backupDatabaseAsync
+  if (typeof SQLite.backupDatabaseAsync === 'function') {
     let snapDb: SQLite.SQLiteDatabase | null = null;
     let liveDb: SQLite.SQLiteDatabase | null = null;
     try {
       snapDb = await SQLite.openDatabaseAsync(`safety_snapshots/${snapshotName}`);
       liveDb = await SQLite.openDatabaseAsync(DEFAULT_DATABASE_NAME);
-      await (SQLite as any).backupDatabaseAsync({
+      await SQLite.backupDatabaseAsync({
         sourceDatabase: liveDb,
+        sourceDatabaseName: 'main',
         destDatabase: snapDb,
+        destDatabaseName: 'main',
       });
-      backupSuccessful = true;
-    } catch {
-      backupSuccessful = false;
+      return;
+    } catch (err: unknown) {
+      // Fail closed: do NOT silently fall back to raw file copy when supported native backup throws!
+      throw new BackupError(
+        'BACKUP_ERR_SNAPSHOT_FAILED',
+        `Native SQLite backup API failed: ${err instanceof Error ? err.message : 'Unknown native backup error'}. Snapshot aborted.`
+      );
     } finally {
       if (snapDb) {
         try { await snapDb.closeAsync(); } catch {}
@@ -179,28 +194,26 @@ async function createSnapshotFromLiveDatabase(
     }
   }
 
-  // Fallback to WAL checkpoint + copy if backupDatabaseAsync is not available or failed
-  if (!backupSuccessful) {
-    try {
-      await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
-    } catch (err: unknown) {
-      throw new BackupError(
-        'BACKUP_ERR_SNAPSHOT_FAILED',
-        `WAL checkpoint failed before snapshot: ${err instanceof Error ? err.message : 'Unknown checkpoint error'}`
-      );
-    }
+  // 2. Fallback only for platforms where backupDatabaseAsync is genuinely unavailable (e.g. Web / Node mock)
+  try {
+    await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+  } catch (err: unknown) {
+    throw new BackupError(
+      'BACKUP_ERR_SNAPSHOT_FAILED',
+      `WAL checkpoint failed before snapshot fallback: ${err instanceof Error ? err.message : 'Unknown checkpoint error'}`
+    );
+  }
 
-    try {
-      await FileSystem.copyAsync({
-        from: activeDbUri,
-        to: snapshotUri,
-      });
-    } catch (err: unknown) {
-      throw new BackupError(
-        'BACKUP_ERR_SNAPSHOT_FAILED',
-        `Failed to copy active database for safety snapshot: ${err instanceof Error ? err.message : 'Copy error'}`
-      );
-    }
+  try {
+    await FileSystem.copyAsync({
+      from: activeDbUri,
+      to: snapshotUri,
+    });
+  } catch (err: unknown) {
+    throw new BackupError(
+      'BACKUP_ERR_SNAPSHOT_FAILED',
+      `Failed to copy active database for safety snapshot fallback: ${err instanceof Error ? err.message : 'Copy error'}`
+    );
   }
 }
 
@@ -212,7 +225,17 @@ export async function createPreMigrationSafetySnapshot(
   db: DatabaseConnection,
   currentVersion: number
 ): Promise<string> {
-  // 1. Ensure directories and paths
+  // 1. Checkpoint WAL
+  try {
+    await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+  } catch (err: unknown) {
+    throw new BackupError(
+      'BACKUP_ERR_SNAPSHOT_FAILED',
+      `WAL checkpoint failed before migration: ${err instanceof Error ? err.message : 'Unknown checkpoint error'}`
+    );
+  }
+
+  // 2. Ensure directories and paths
   const safetyDir = await ensureSafetyDirectory();
   const activeDbUri = getActiveDatabaseUri();
   if (!activeDbUri) {

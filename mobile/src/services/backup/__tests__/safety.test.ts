@@ -41,7 +41,7 @@ describe('Safety Snapshot Engine & Fail-Closed Invariants', () => {
     mockFs.copyAsync.mockResolvedValue(undefined);
     mockFs.deleteAsync.mockResolvedValue(undefined);
     mockFs.readDirectoryAsync.mockResolvedValue([]);
-    mockSqlite.backupDatabaseAsync.mockRejectedValue(new Error('Native backup unavailable'));
+    mockSqlite.backupDatabaseAsync.mockResolvedValue(undefined);
   });
 
   it('converts base64 string to Uint8Array accurately without truncation', () => {
@@ -282,13 +282,36 @@ describe('Safety Snapshot Engine & Fail-Closed Invariants', () => {
 
     await createPreRestoreSafetySnapshot(mockDb as DatabaseConnection, 6);
 
-    // Verified that native backupDatabaseAsync was called for safe transactional snapshot under concurrent writes
-    expect(mockSqlite.backupDatabaseAsync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sourceDatabase: expect.anything(),
-        destDatabase: expect.anything(),
-      })
-    );
+    // Verified that native backupDatabaseAsync was called with exact typed options
+    expect(mockSqlite.backupDatabaseAsync).toHaveBeenCalledWith({
+      sourceDatabase: expect.anything(),
+      sourceDatabaseName: 'main',
+      destDatabase: expect.anything(),
+      destDatabaseName: 'main',
+    });
+  });
+
+  it('Fails closed when native backupDatabaseAsync throws: does not silently fall back to file copying', async () => {
+    mockSqlite.backupDatabaseAsync.mockRejectedValue(new Error('Native backup lock error'));
+
+    const mockDb: Partial<DatabaseConnection> = {
+      execAsync: jest.fn().mockResolvedValue(undefined),
+      runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+    };
+
+    const mockSnapDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    mockSqlite.openDatabaseAsync.mockResolvedValue(mockSnapDb as any);
+
+    await expect(
+      createPreRestoreSafetySnapshot(mockDb as DatabaseConnection, 6)
+    ).rejects.toThrow(BackupError);
+
+    // copyAsync must NOT have been called as a fallback when native backup threw!
+    expect(mockFs.copyAsync).not.toHaveBeenCalled();
   });
 
   it('Strict retention failure: aborts and deletes snapshot file when retention pruning fails', async () => {

@@ -5,18 +5,18 @@ import { migration002 } from '../migrations/002_categories_and_transfers';
 import { migration003 } from '../migrations/003_debts_and_counterparties';
 import { migration004 } from '../migrations/004_debt_ledger_integrity_upgrade';
 import { migration005 } from '../migrations/005_backup_metadata_and_checksums';
-import { CANONICAL_MIGRATION_CHECKSUMS } from '../migrations/006_backup_integrity_hardening';
+import { CANONICAL_MIGRATION_CHECKSUMS } from '../migrations/registry';
 
 describe('Migration 006: Backup Integrity Hardening and Checksums Enforcement', () => {
   it('applies cleanly on a fresh database and populates canonical checksums for all 6 migrations', async () => {
     const db = createBetterSqliteConnection();
     const result = await runMigrations(db);
 
-    expect(result.applied).toBe(6);
-    expect(result.versions).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(result.applied).toBe(7);
+    expect(result.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     const applied = await getAppliedMigrations(db);
-    expect(applied).toHaveLength(6);
+    expect(applied).toHaveLength(7);
 
     for (const r of applied) {
       expect(r.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[r.version]);
@@ -67,10 +67,10 @@ describe('Migration 006: Backup Integrity Hardening and Checksums Enforcement', 
       ) VALUES ('pre_existing_005', 'manual_export', 1, 5, 'old.fmz', 500, 'old_hash', 5, 'created', NULL, 1000);
     `);
 
-    // 2. Run runner to apply Migration 006
+    // 2. Run runner to apply Migrations 006 and 007
     const result = await runMigrations(db);
-    expect(result.applied).toBe(1);
-    expect(result.versions).toEqual([6]);
+    expect(result.applied).toBe(2);
+    expect(result.versions).toEqual([6, 7]);
 
     // 3. Verify pre-existing row preserved
     const existingHistory = await db.getFirstAsync<{ id: string; status: string }>(

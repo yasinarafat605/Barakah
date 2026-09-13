@@ -9,10 +9,9 @@ import { migration002 } from './migrations/002_categories_and_transfers';
 import { migration003 } from './migrations/003_debts_and_counterparties';
 import { migration004 } from './migrations/004_debt_ledger_integrity_upgrade';
 import { migration005 } from './migrations/005_backup_metadata_and_checksums';
-import {
-  migration006,
-  CANONICAL_MIGRATION_CHECKSUMS,
-} from './migrations/006_backup_integrity_hardening';
+import { migration006 } from './migrations/006_backup_integrity_hardening';
+import { migration007 } from './migrations/007_backup_export_statuses';
+import { CANONICAL_MIGRATION_CHECKSUMS } from './migrations/registry';
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { runExclusiveTransaction } from './client';
@@ -25,6 +24,7 @@ export const MIGRATIONS: Migration[] = [
   migration004,
   migration005,
   migration006,
+  migration007,
 ];
 
 export interface MigrationResult {

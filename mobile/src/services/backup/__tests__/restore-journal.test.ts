@@ -8,6 +8,7 @@ import {
   writeRestoreJournal,
   populateAndVerifyStagingDatabase,
   verifyAndPreviewBackup,
+  computeManifestDigest,
 } from '../restore-service';
 import {
   RestoreError,
@@ -18,8 +19,9 @@ import {
 import { createEncryptedBackup } from '../backup-service';
 import { createBetterSqliteConnection } from '../../../db/test-adapter';
 import { runMigrations } from '../../../db/migrations';
-import { CANONICAL_MIGRATION_CHECKSUMS } from '../../../db/migrations/006_backup_integrity_hardening';
-import { computeTableChecksums } from '../serializer';
+import { CANONICAL_MIGRATION_CHECKSUMS } from '../../../db/migrations/registry';
+import { computeTableChecksums, canonicalJsonStringify } from '../serializer';
+import { computeSha256Hex } from '../crypto';
 
 jest.mock('expo-sqlite', () => ({
   openDatabaseAsync: jest.fn(),
@@ -92,7 +94,7 @@ jest.mock('../safety', () => ({
   createPreRestoreSafetySnapshot: jest.fn().mockResolvedValue('file:///app/files/SQLite/safety_snapshots/pre_restore_safety_test.db'),
 }));
 
-describe('Restore Journal & Crash Recovery Suite', () => {
+describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simulation Suite', () => {
   const sqliteDir = 'file:///app/files/SQLite/';
   const activeDbUri = `${sqliteDir}barakah.db`;
 
@@ -108,7 +110,7 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     });
   });
 
-  it('Successful full schema-6 restore: populates financial tables and verifies canonical migration ledger', async () => {
+  it('Successful full schema-7 restore: populates financial tables and verifies canonical migration ledger', async () => {
     const testDb = createBetterSqliteConnection();
     await runMigrations(testDb);
 
@@ -137,17 +139,17 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     const accCount = await stagingDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM accounts WHERE id = ?;', 'acc_s6');
     expect(accCount?.c).toBe(1);
 
-    // Verify destination schema_migrations contains all 6 migrations with canonical checksums
+    // Verify destination schema_migrations contains all 7 migrations with canonical checksums
     const destMigrations = await stagingDb.getAllAsync<{ version: number; checksum: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
     );
-    expect(destMigrations.length).toBe(6);
+    expect(destMigrations.length).toBe(7);
     for (const m of destMigrations) {
       expect(m.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[m.version]);
     }
   });
 
-  it('Schema-4 and schema-5 upgrade restores: successfully restores into schema-6 destination without checksum rejection', async () => {
+  it('Schema-4 and schema-5 upgrade restores: successfully restores into schema-7 destination without checksum rejection', async () => {
     // 1. Emulate a schema-4 backup manifest (contains migrations 1..4 in provenance ledger)
     const stagingDb4 = createBetterSqliteConnection();
     const mockManifestV4 = {
@@ -189,15 +191,15 @@ describe('Restore Journal & Crash Recovery Suite', () => {
       },
     };
 
-    // Staging population applies migrations 1..6 and inserts data
+    // Staging population applies migrations 1..7 and inserts data
     await populateAndVerifyStagingDatabase(stagingDb4, mockManifestV4 as any);
 
-    // Target database is now at schema 6
+    // Target database is now at schema 7
     const cols = await stagingDb4.getAllAsync<{ name: string }>('PRAGMA table_info(backup_history);');
     expect(cols.length).toBeGreaterThan(0); // backup_history table created by migration 005
     const rows = await stagingDb4.getAllAsync<{ version: number; checksum: string }>('SELECT version, checksum FROM schema_migrations;');
-    expect(rows.length).toBe(6);
-    expect(rows.find(r => r.version === 6)?.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[6]);
+    expect(rows.length).toBe(7);
+    expect(rows.find(r => r.version === 7)?.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[7]);
 
     // 2. Emulate a schema-5 backup manifest
     const stagingDb5 = createBetterSqliteConnection();
@@ -216,7 +218,7 @@ describe('Restore Journal & Crash Recovery Suite', () => {
 
     await populateAndVerifyStagingDatabase(stagingDb5, mockManifestV5 as any);
     const rows5 = await stagingDb5.getAllAsync<{ version: number }>('SELECT version FROM schema_migrations;');
-    expect(rows5.length).toBe(6);
+    expect(rows5.length).toBe(7);
   });
 
   it('Migration-ledger policy: verifies destination ledger against canonical checksums while comparing financial tables independently', async () => {
@@ -267,6 +269,7 @@ describe('Restore Journal & Crash Recovery Suite', () => {
 
     // Persist incomplete restore journal
     const journal: RestoreJournal = {
+      journalVersion: 1,
       operationId: 'op_crash_1',
       activePath: activeDbUri,
       stagingPath: `${sqliteDir}staging_restore_test.db`,
@@ -309,9 +312,10 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     // Phase 1: initialized (active DB was never moved)
     mockVfs.set(activeDbUri, { content: 'active-db', size: 1024, isDir: false });
     await writeRestoreJournal({
+      journalVersion: 1,
       operationId: 'op_p1',
       activePath: activeDbUri,
-      stagingPath: `${sqliteDir}staging_p1.db`,
+      stagingPath: `${sqliteDir}staging_restore_p1.db`,
       recoveryOldPath: `${sqliteDir}barakah.db.old_p1`,
       safetySnapshotPath: null,
       expectedDestinationChecksum: 'cs',
@@ -326,9 +330,10 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     mockVfs.set(activeDbUri, { content: 'unverified-staging-db', size: 1024, isDir: false });
     mockVfs.set(oldPath, { content: 'verified-original-old-db', size: 1024, isDir: false });
     await writeRestoreJournal({
+      journalVersion: 1,
       operationId: 'op_p2',
       activePath: activeDbUri,
-      stagingPath: `${sqliteDir}staging_p2.db`,
+      stagingPath: `${sqliteDir}staging_restore_p2.db`,
       recoveryOldPath: oldPath,
       safetySnapshotPath: null,
       expectedDestinationChecksum: 'cs',
@@ -341,15 +346,27 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     expect(await readRestoreJournal()).toBeNull();
 
     // Phase 3: activation_verified (staging was already verified)
+    const emptyChecksums = computeTableChecksums({
+      accounts: [],
+      categories: [],
+      transactions: [],
+      counterparties: [],
+      debts: [],
+      debt_transactions: [],
+      schema_migrations: [],
+    });
+    const emptyManifestDigest = computeManifestDigest(emptyChecksums);
+
     mockVfs.set(activeDbUri, { content: 'verified-new-db', size: 1024, isDir: false });
     mockVfs.set(oldPath, { content: 'old-backup-to-prune', size: 1024, isDir: false });
     await writeRestoreJournal({
+      journalVersion: 1,
       operationId: 'op_p3',
       activePath: activeDbUri,
-      stagingPath: `${sqliteDir}staging_p3.db`,
+      stagingPath: `${sqliteDir}staging_restore_p3.db`,
       recoveryOldPath: oldPath,
       safetySnapshotPath: null,
-      expectedDestinationChecksum: 'cs',
+      expectedDestinationChecksum: emptyManifestDigest,
       phase: 'activation_verified',
       updatedAtMs: Date.now(),
     });
@@ -360,10 +377,11 @@ describe('Restore Journal & Crash Recovery Suite', () => {
 
     // Phase 4: complete (cleans journal)
     await writeRestoreJournal({
+      journalVersion: 1,
       operationId: 'op_p4',
       activePath: activeDbUri,
-      stagingPath: '',
-      recoveryOldPath: '',
+      stagingPath: `${sqliteDir}staging_restore_p4.db`,
+      recoveryOldPath: `${sqliteDir}barakah.db.old_p4`,
       safetySnapshotPath: null,
       expectedDestinationChecksum: 'cs',
       phase: 'complete',
@@ -378,6 +396,7 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     const mockCorruptDb = {
       getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'file is not a database' }),
       getAllAsync: jest.fn().mockResolvedValue([]),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
     };
     mockGetDatabase.mockResolvedValue(mockCorruptDb);
 
@@ -395,7 +414,7 @@ describe('Restore Journal & Crash Recovery Suite', () => {
       header: {
         magic: 'BMZ1',
         formatVersion: 1,
-        schemaVersion: 6,
+        schemaVersion: 7,
         createdAtMs: Date.now(),
         kdfId: 1,
         kdfN: 16384,
@@ -412,14 +431,14 @@ describe('Restore Journal & Crash Recovery Suite', () => {
         manifestVersion: 1,
         createdAtMs: Date.now(),
         appVersion: 1,
-        schemaVersion: 6,
+        schemaVersion: 7,
         rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
         tableChecksums: { accounts: '', categories: '', transactions: '', counterparties: '', debts: '', debt_transactions: '', schema_migrations: '' },
         payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
       },
       preview: {
         createdAtMs: Date.now(),
-        schemaVersion: 6,
+        schemaVersion: 7,
         appVersion: 1,
         rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
         liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
@@ -449,9 +468,10 @@ describe('Restore Journal & Crash Recovery Suite', () => {
 
     // Set active journal referencing referencedOldPath
     await writeRestoreJournal({
+      journalVersion: 1,
       operationId: 'op_ref',
       activePath: activeDbUri,
-      stagingPath: `${sqliteDir}staging_active.db`,
+      stagingPath: `${sqliteDir}staging_restore_active.db`,
       recoveryOldPath: referencedOldPath,
       safetySnapshotPath: null,
       expectedDestinationChecksum: 'cs',
@@ -469,7 +489,7 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     expect(mockVfs.has(disposableStagingPath)).toBe(false);
   });
 
-  it('End-to-end runtime QA lifecycle: populate -> export -> verify -> mutate -> restore -> restart -> reconcile -> inject failure -> recover on restart', async () => {
+  it('Deterministic simulation of end-to-end restore lifecycle: populate -> export -> verify -> mutate -> restore -> restart -> reconcile -> inject failure -> recover on restart', async () => {
     // 1. Create populated database
     const liveDb = createBetterSqliteConnection();
     await runMigrations(liveDb);
@@ -549,9 +569,10 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     mockVfs.set(crashOldPath, { content: 'intact-original-data', size: 1024, isDir: false });
     mockVfs.delete(activeDbUri); // active DB is missing due to crash
     await writeRestoreJournal({
+      journalVersion: 1,
       operationId: 'op_crash_simulation',
       activePath: activeDbUri,
-      stagingPath: `${sqliteDir}staging_failed.db`,
+      stagingPath: `${sqliteDir}staging_restore_failed.db`,
       recoveryOldPath: crashOldPath,
       safetySnapshotPath: null,
       expectedDestinationChecksum: 'expected_cs',
@@ -572,5 +593,307 @@ describe('Restore Journal & Crash Recovery Suite', () => {
     expect(mockVfs.has(activeDbUri)).toBe(true);
     expect(mockVfs.get(activeDbUri)?.content).toBe('intact-original-data');
     expect(await readRestoreJournal()).toBeNull();
+  });
+
+  // =========================================================================
+  // Section 3: Crash-Safe Journal Resilience Tests
+  // =========================================================================
+
+  it('Partial journal write: fails closed with RESTORE_ERR_RECOVERY_REQUIRED', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    mockVfs.set(journalUri, { content: '{"version": 1, "checksum": "abc", "payload": {', size: 40, isDir: false });
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+  });
+
+  it('Invalid JSON journal: fails closed with RESTORE_ERR_RECOVERY_REQUIRED', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    mockVfs.set(journalUri, { content: '{invalid-json-content', size: 21, isDir: false });
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+  });
+
+  it('Invalid phase: fails closed with RESTORE_ERR_RECOVERY_REQUIRED', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    const invalidJournal: any = {
+      version: 1,
+      checksum: '',
+      payload: {
+        journalVersion: 1,
+        operationId: 'op_invalid_phase',
+        activePath: activeDbUri,
+        stagingPath: `${sqliteDir}staging_restore_test.db`,
+        recoveryOldPath: `${sqliteDir}barakah.db.old_test`,
+        safetySnapshotPath: null,
+        expectedDestinationChecksum: 'cs',
+        phase: 'unsupported_phase_name',
+        updatedAtMs: Date.now(),
+      },
+    };
+    invalidJournal.checksum = computeSha256Hex(canonicalJsonStringify(invalidJournal.payload));
+    mockVfs.set(journalUri, { content: JSON.stringify(invalidJournal), size: 500, isDir: false });
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+  });
+
+  it('Missing fields: rejects journal missing operationId or paths', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    const incompleteJournal: any = {
+      version: 1,
+      checksum: '',
+      payload: {
+        journalVersion: 1,
+        // Missing operationId
+        activePath: activeDbUri,
+        stagingPath: `${sqliteDir}staging_restore_test.db`,
+        recoveryOldPath: `${sqliteDir}barakah.db.old_test`,
+        safetySnapshotPath: null,
+        expectedDestinationChecksum: 'cs',
+        phase: 'initialized',
+        updatedAtMs: Date.now(),
+      },
+    };
+    incompleteJournal.checksum = computeSha256Hex(canonicalJsonStringify(incompleteJournal.payload));
+    mockVfs.set(journalUri, { content: JSON.stringify(incompleteJournal), size: 400, isDir: false });
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+  });
+
+  it('Unsafe path injection: rejects journal referencing paths outside approved directories or containing traversal', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    const maliciousJournal = {
+      version: 1,
+      checksum: '',
+      payload: {
+        journalVersion: 1 as const,
+        operationId: 'op_path_traversal',
+        activePath: `${sqliteDir}../../etc/passwd`,
+        stagingPath: `${sqliteDir}staging_restore_test.db`,
+        recoveryOldPath: `${sqliteDir}barakah.db.old_test`,
+        safetySnapshotPath: null,
+        expectedDestinationChecksum: 'cs',
+        phase: 'initialized' as const,
+        updatedAtMs: Date.now(),
+      },
+    };
+    maliciousJournal.checksum = computeSha256Hex(canonicalJsonStringify(maliciousJournal.payload));
+    mockVfs.set(journalUri, { content: JSON.stringify(maliciousJournal), size: 400, isDir: false });
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+  });
+
+  it('Journal checksum mismatch: detects modified payload and fails closed', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    const tamperedJournal = {
+      version: 1,
+      checksum: '0000000000000000000000000000000000000000000000000000000000000000',
+      payload: {
+        journalVersion: 1 as const,
+        operationId: 'op_checksum_mismatch',
+        activePath: activeDbUri,
+        stagingPath: `${sqliteDir}staging_restore_test.db`,
+        recoveryOldPath: `${sqliteDir}barakah.db.old_test`,
+        safetySnapshotPath: null,
+        expectedDestinationChecksum: 'cs',
+        phase: 'initialized' as const,
+        updatedAtMs: Date.now(),
+      },
+    };
+    mockVfs.set(journalUri, { content: JSON.stringify(tamperedJournal), size: 400, isDir: false });
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+  });
+
+  it('Crash while replacing the journal: recovers previous valid journal generation from .bak', async () => {
+    const journalUri = `${sqliteDir}barakah_restore_journal.json`;
+    const bakUri = `${sqliteDir}barakah_restore_journal.json.bak`;
+    const recoveryOldPath = `${sqliteDir}barakah.db.old_bak_test`;
+
+    mockVfs.delete(activeDbUri);
+    mockVfs.set(recoveryOldPath, { content: 'valid-old-db', size: 1024, isDir: false });
+
+    // Simulate crash: primary journal is truncated, but previous valid generation exists in .bak
+    mockVfs.set(journalUri, { content: '{"truncated_write"', size: 18, isDir: false });
+
+    const validBakJournal: RestoreJournal = {
+      journalVersion: 1,
+      operationId: 'op_from_bak',
+      activePath: activeDbUri,
+      stagingPath: `${sqliteDir}staging_restore_test.db`,
+      recoveryOldPath: recoveryOldPath,
+      safetySnapshotPath: null,
+      expectedDestinationChecksum: 'cs',
+      phase: 'active_moved_to_old',
+      updatedAtMs: Date.now(),
+    };
+    const bakEnvelope = {
+      version: 1,
+      checksum: computeSha256Hex(canonicalJsonStringify(validBakJournal)),
+      payload: validBakJournal,
+    };
+    mockVfs.set(bakUri, { content: JSON.stringify(bakEnvelope), size: 500, isDir: false });
+
+    const mockTestDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    (SQLite.openDatabaseAsync as jest.Mock).mockResolvedValue(mockTestDb);
+
+    // Startup recovery reads .bak and safely restores
+    await recoverFromInterruptedRestore();
+
+    expect(mockVfs.has(activeDbUri)).toBe(true);
+    expect(mockVfs.get(activeDbUri)?.content).toBe('valid-old-db');
+  });
+
+  it('initialized with valid active database: verifies untouched database and clears journal without overwriting', async () => {
+    mockVfs.set(activeDbUri, { content: 'untouched-active-data', size: 1024, isDir: false });
+
+    const journal: RestoreJournal = {
+      journalVersion: 1,
+      operationId: 'op_init_valid',
+      activePath: activeDbUri,
+      stagingPath: `${sqliteDir}staging_restore_init.db`,
+      recoveryOldPath: `${sqliteDir}barakah.db.old_init`,
+      safetySnapshotPath: `${sqliteDir}safety_snapshots/pre_restore_safety_test.db`,
+      expectedDestinationChecksum: 'cs',
+      phase: 'initialized',
+      updatedAtMs: Date.now(),
+    };
+    await writeRestoreJournal(journal);
+
+    const mockTestDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    (SQLite.openDatabaseAsync as jest.Mock).mockResolvedValue(mockTestDb);
+
+    await recoverFromInterruptedRestore();
+
+    expect(mockVfs.get(activeDbUri)?.content).toBe('untouched-active-data');
+    expect(await readRestoreJournal()).toBeNull();
+  });
+
+  it('activation_verified with wrong destination digest: fails closed and preserves old recovery database', async () => {
+    const recoveryOldPath = `${sqliteDir}barakah.db.old_wrong_digest`;
+    mockVfs.set(activeDbUri, { content: 'activated-db-data', size: 1024, isDir: false });
+    mockVfs.set(recoveryOldPath, { content: 'vital-old-db-data', size: 1024, isDir: false });
+
+    const journal: RestoreJournal = {
+      journalVersion: 1,
+      operationId: 'op_wrong_digest',
+      activePath: activeDbUri,
+      stagingPath: `${sqliteDir}staging_restore_digest.db`,
+      recoveryOldPath: recoveryOldPath,
+      safetySnapshotPath: null,
+      expectedDestinationChecksum: 'wrong_digest_value_that_does_not_match',
+      phase: 'activation_verified',
+      updatedAtMs: Date.now(),
+    };
+    await writeRestoreJournal(journal);
+
+    const mockTestDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    (SQLite.openDatabaseAsync as jest.Mock).mockResolvedValue(mockTestDb);
+
+    await expect(recoverFromInterruptedRestore()).rejects.toThrow(RestoreError);
+    await expect(recoverFromInterruptedRestore()).rejects.toMatchObject({
+      code: 'RESTORE_ERR_RECOVERY_REQUIRED',
+    });
+
+    // Old recovery database must NOT have been deleted
+    expect(mockVfs.has(recoveryOldPath)).toBe(true);
+  });
+
+  it('Manual-recovery outcome: preserves active, staging, old, and snapshot files on rollback failure', async () => {
+    const mockCorruptDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'corrupt' }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    mockGetDatabase.mockResolvedValue(mockCorruptDb);
+
+    const mockStagingDb: any = {
+      execAsync: jest.fn().mockResolvedValue(undefined),
+      runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+      withExclusiveTransactionAsync: jest.fn(async (cb) => cb(mockStagingDb)),
+    };
+    (SQLite.openDatabaseAsync as jest.Mock).mockResolvedValue(mockStagingDb);
+
+    const dummyContext: DecryptedBackupContext = {
+      header: {
+        magic: 'BMZ1',
+        formatVersion: 1,
+        schemaVersion: 7,
+        createdAtMs: Date.now(),
+        kdfId: 1,
+        kdfN: 16384,
+        kdfR: 8,
+        kdfP: 1,
+        salt: new Uint8Array(16),
+        cipherId: 1,
+        nonce: new Uint8Array(12),
+        appVersion: 1,
+        flags: 1,
+        rawHeaderBytes: new Uint8Array(60),
+      },
+      manifest: {
+        manifestVersion: 1,
+        createdAtMs: Date.now(),
+        appVersion: 1,
+        schemaVersion: 7,
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
+        tableChecksums: { accounts: '', categories: '', transactions: '', counterparties: '', debts: '', debt_transactions: '', schema_migrations: '' },
+        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
+      },
+      preview: {
+        createdAtMs: Date.now(),
+        schemaVersion: 7,
+        appVersion: 1,
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
+        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
+      },
+      envelopeBytes: new Uint8Array(100),
+    };
+
+    try {
+      await executeRestore(mockStagingDb as any, dummyContext);
+      expect('should have thrown').toBe('threw');
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(RestoreError);
+      expect((err as RestoreError).outcome).toBe('activation_failed_manual_recovery_available');
+
+      const journal = await readRestoreJournal();
+      expect(journal).not.toBeNull();
+      if (journal?.recoveryOldPath) {
+        expect(mockVfs.has(journal.recoveryOldPath)).toBe(true);
+      }
+    }
   });
 });
