@@ -4,4 +4,6 @@ export * from './migrations';
 export * from './accounts';
 export * from './categories';
 export * from './transactions';
+export * from './counterparties';
+export * from './debts';
 export * from './provider';

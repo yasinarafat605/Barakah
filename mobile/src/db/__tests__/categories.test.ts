@@ -32,15 +32,15 @@ describe('Categories Repository (Milestone 2)', () => {
   });
 
   describe('Default Category Seeding', () => {
-    it('seeds exactly 20 default categories (8 income, 12 expense)', async () => {
+    it('seeds default categories (9 income, 13 expense = 22 total)', async () => {
       const allCategories = await getCategories();
-      expect(allCategories).toHaveLength(20);
+      expect(allCategories).toHaveLength(22);
 
       const incomeCats = allCategories.filter((c) => c.type === 'income');
       const expenseCats = allCategories.filter((c) => c.type === 'expense');
 
-      expect(incomeCats).toHaveLength(8);
-      expect(expenseCats).toHaveLength(12);
+      expect(incomeCats).toHaveLength(9);
+      expect(expenseCats).toHaveLength(13);
 
       // All seeded categories must be default
       allCategories.forEach((c) => {

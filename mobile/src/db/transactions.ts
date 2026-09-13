@@ -484,6 +484,89 @@ export async function softDeleteTransaction(
 
   let changes = 0;
   await runExclusiveTransaction(db, async () => {
+    // Check if linked to a debt_transaction
+    const dtx = await db.getFirstAsync<{
+      id: string;
+      debt_id: string;
+      role: string;
+      amount: number;
+    }>(
+      'SELECT id, debt_id, role, amount FROM debt_transactions WHERE transaction_id = ? AND deleted_at IS NULL;',
+      id
+    );
+
+    if (dtx) {
+      if (dtx.role === 'disbursement') {
+        // Prevent deleting a debt's disbursement if repayments exist
+        const repaymentCount = await db.getFirstAsync<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM debt_transactions WHERE debt_id = ? AND role = 'repayment' AND deleted_at IS NULL;",
+          dtx.debt_id
+        );
+        if ((repaymentCount?.count ?? 0) > 0) {
+          throw new Error(
+            'Cannot delete debt disbursement transaction while repayments exist. Settle or delete repayments first.'
+          );
+        }
+
+        // Soft-delete parent debt and its debt transactions
+        await db.runAsync(
+          'UPDATE debts SET deleted_at = ?, updated_at = ? WHERE id = ?;',
+          now,
+          now,
+          dtx.debt_id
+        );
+        await db.runAsync(
+          'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE debt_id = ? AND deleted_at IS NULL;',
+          now,
+          now,
+          dtx.debt_id
+        );
+      } else if (dtx.role === 'repayment') {
+        // Soft-delete linked debt transaction
+        await db.runAsync(
+          'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
+          now,
+          now,
+          dtx.id
+        );
+
+        // Recalibrate parent debt outstanding balance and reopen if settled
+        const debtRow = await db.getFirstAsync<{
+          status: string;
+          original_principal: number;
+          total_repaid: number;
+        }>(
+          `SELECT
+             d.status,
+             d.original_principal,
+             COALESCE(SUM(
+               CASE
+                 WHEN dt.role = 'repayment' AND dt.deleted_at IS NULL THEN dt.amount
+                 WHEN dt.role = 'adjustment_decrease' AND dt.deleted_at IS NULL THEN dt.amount
+                 WHEN dt.role = 'adjustment_increase' AND dt.deleted_at IS NULL THEN -dt.amount
+                 ELSE 0
+               END
+             ), 0) AS total_repaid
+           FROM debts d
+           LEFT JOIN debt_transactions dt ON d.id = dt.debt_id
+           WHERE d.id = ?
+           GROUP BY d.id;`,
+          dtx.debt_id
+        );
+
+        if (debtRow) {
+          const outstanding = debtRow.original_principal - debtRow.total_repaid;
+          if (debtRow.status === 'settled' && outstanding > 0) {
+            await db.runAsync(
+              "UPDATE debts SET status = 'active', updated_at = ? WHERE id = ?;",
+              now,
+              dtx.debt_id
+            );
+          }
+        }
+      }
+    }
+
     if (existing.transfer_id) {
       const res = await db.runAsync(
         'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE transfer_id = ? AND deleted_at IS NULL;',
@@ -509,6 +592,10 @@ export async function softDeleteTransaction(
 /**
  * Restores a soft-deleted transaction.
  * If the transaction is part of a transfer, BOTH paired entries are restored atomically.
+ * If the transaction is linked to a debt_transaction:
+ * - If role === 'disbursement', restores both the disbursement and the parent debt.
+ * - If role === 'repayment', verifies restoring does not exceed outstanding balance,
+ *   restores the debt_transaction, and auto-settles the parent debt if outstanding reaches 0.
  */
 export async function restoreTransaction(
   id: string,
@@ -527,6 +614,81 @@ export async function restoreTransaction(
 
   let changes = 0;
   await runExclusiveTransaction(db, async () => {
+    // Check if linked to a debt_transaction
+    const dtx = await db.getFirstAsync<{
+      id: string;
+      debt_id: string;
+      role: string;
+      amount: number;
+    }>(
+      'SELECT id, debt_id, role, amount FROM debt_transactions WHERE transaction_id = ? AND deleted_at IS NOT NULL;',
+      id
+    );
+
+    if (dtx) {
+      if (dtx.role === 'disbursement') {
+        // Restore the parent debt and the disbursement
+        await db.runAsync(
+          'UPDATE debts SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
+          now,
+          dtx.debt_id
+        );
+        await db.runAsync(
+          'UPDATE debt_transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
+          now,
+          dtx.id
+        );
+      } else if (dtx.role === 'repayment') {
+        // Check if restoring this repayment would exceed outstanding principal
+        const debtRow = await db.getFirstAsync<{
+          status: string;
+          original_principal: number;
+          total_repaid: number;
+        }>(
+          `SELECT
+             d.status,
+             d.original_principal,
+             COALESCE(SUM(
+               CASE
+                 WHEN dt.role = 'repayment' AND dt.deleted_at IS NULL THEN dt.amount
+                 WHEN dt.role = 'adjustment_decrease' AND dt.deleted_at IS NULL THEN dt.amount
+                 WHEN dt.role = 'adjustment_increase' AND dt.deleted_at IS NULL THEN -dt.amount
+                 ELSE 0
+               END
+             ), 0) AS total_repaid
+           FROM debts d
+           LEFT JOIN debt_transactions dt ON d.id = dt.debt_id
+           WHERE d.id = ?
+           GROUP BY d.id;`,
+          dtx.debt_id
+        );
+
+        if (debtRow) {
+          const newOutstanding = debtRow.original_principal - (debtRow.total_repaid + dtx.amount);
+          if (newOutstanding < 0) {
+            throw new Error(
+              `Cannot restore repayment: would exceed outstanding principal by ${Math.abs(newOutstanding)} minor units.`
+            );
+          }
+
+          // Restore linked debt transaction
+          await db.runAsync(
+            'UPDATE debt_transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
+            now,
+            dtx.id
+          );
+
+          if (newOutstanding === 0) {
+            await db.runAsync(
+              "UPDATE debts SET status = 'settled', updated_at = ? WHERE id = ?;",
+              now,
+              dtx.debt_id
+            );
+          }
+        }
+      }
+    }
+
     if (existing.transfer_id) {
       const res = await db.runAsync(
         'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE transfer_id = ? AND deleted_at IS NOT NULL;',

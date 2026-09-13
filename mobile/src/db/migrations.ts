@@ -6,9 +6,10 @@
 import { DatabaseConnection, Migration } from './types';
 import { migration001 } from './migrations/001_initial_schema';
 import { migration002 } from './migrations/002_categories_and_transfers';
+import { migration003 } from './migrations/003_debts_and_counterparties';
 import { runExclusiveTransaction } from './client';
 
-export const MIGRATIONS: Migration[] = [migration001, migration002];
+export const MIGRATIONS: Migration[] = [migration001, migration002, migration003];
 
 export interface MigrationResult {
   applied: number;

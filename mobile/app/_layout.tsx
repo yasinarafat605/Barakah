@@ -29,6 +29,48 @@ export default function RootLayout() {
               headerShown: false,
             }}
           />
+          <Stack.Screen
+            name="debts/index"
+            options={{
+              headerShown: false,
+              title: t('debts.title'),
+            }}
+          />
+          <Stack.Screen
+            name="debts/add"
+            options={{
+              headerShown: false,
+              presentation: 'modal',
+              title: t('debts.addDebt'),
+            }}
+          />
+          <Stack.Screen
+            name="debts/[id]"
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
+            name="debts/[id]/repay"
+            options={{
+              headerShown: false,
+              presentation: 'modal',
+              title: t('debts.addRepayment'),
+            }}
+          />
+          <Stack.Screen
+            name="counterparties/index"
+            options={{
+              headerShown: false,
+              title: t('counterparties.title'),
+            }}
+          />
+          <Stack.Screen
+            name="counterparties/[id]"
+            options={{
+              headerShown: false,
+            }}
+          />
         </Stack>
         <StatusBar style="auto" />
       </DatabaseProvider>

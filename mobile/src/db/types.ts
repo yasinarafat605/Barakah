@@ -147,3 +147,157 @@ export interface TransactionFilters {
   limit?: number;
   offset?: number;
 }
+
+// ----------------------------------------------------------------------
+// Phase 3: Counterparties, Debts & Liabilities Types
+// ----------------------------------------------------------------------
+
+export type CounterpartyType = 'person' | 'business' | 'organisation' | 'other';
+
+export interface CounterpartyRow {
+  id: string;
+  name: string;
+  type: CounterpartyType;
+  phone: string | null;
+  email: string | null;
+  note: string | null;
+  avatar_color: string | null;
+  is_archived: number; // 0 = active, 1 = archived
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateCounterpartyInput {
+  name: string;
+  type?: CounterpartyType;
+  phone?: string | null;
+  email?: string | null;
+  note?: string | null;
+  avatarColor?: string | null;
+}
+
+export interface UpdateCounterpartyInput {
+  name?: string;
+  type?: CounterpartyType;
+  phone?: string | null;
+  email?: string | null;
+  note?: string | null;
+  avatarColor?: string | null;
+}
+
+export interface CounterpartyWithDebtSummary extends CounterpartyRow {
+  active_debt_count: number;
+  settled_debt_count: number;
+  total_borrowed_by_currency: Record<string, number>; // Total I owe them
+  total_lent_by_currency: Record<string, number>;     // Total they owe me
+}
+
+export type DebtDirection = 'borrowed' | 'lent';
+export type DebtOpeningMode = 'new_with_cash' | 'existing_balance';
+export type DebtStatus = 'active' | 'settled';
+export type DebtDueState = 'active' | 'due_soon' | 'overdue' | 'settled' | 'archived';
+
+export interface DebtRow {
+  id: string;
+  counterparty_id: string;
+  direction: DebtDirection;
+  original_principal: number; // Positive integer minor units
+  currency: string;
+  opening_mode: DebtOpeningMode;
+  opened_at: number; // Unix ms
+  due_date: string | null; // Calendar date 'YYYY-MM-DD'
+  status: DebtStatus;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+  archived_at: number | null; // Unix ms
+  deleted_at: number | null; // Unix ms
+}
+
+export interface DebtWithDetails extends DebtRow {
+  counterparty_name: string;
+  counterparty_type: CounterpartyType;
+  total_repaid: number;
+  outstanding_principal: number;
+  due_state: DebtDueState;
+  linked_account_id?: string | null;
+  linked_account_name?: string | null;
+}
+
+export interface CreateDebtInput {
+  counterpartyId: string;
+  direction: DebtDirection;
+  originalPrincipalMinor: number;
+  currency?: string;
+  openingMode: DebtOpeningMode;
+  openedAt?: number;
+  dueDate?: string | null; // Calendar date 'YYYY-MM-DD'
+  note?: string | null;
+  // If openingMode === 'new_with_cash':
+  accountId?: string;
+}
+
+export interface UpdateDebtInput {
+  dueDate?: string | null; // Calendar date 'YYYY-MM-DD'
+  note?: string | null;
+  counterpartyId?: string;
+}
+
+export interface DebtSummary {
+  totalBorrowedByCurrency: Record<string, number>;
+  totalLentByCurrency: Record<string, number>;
+}
+
+export type DebtWithCounterparty = DebtWithDetails;
+export type DebtTimelineItem = DebtTransactionWithDetails;
+
+export interface DebtFilters {
+  direction?: DebtDirection;
+  status?: DebtStatus | 'all';
+  counterpartyId?: string;
+  currency?: string;
+  isArchived?: boolean;
+  includeDeleted?: boolean;
+}
+
+export type DebtTransactionRole =
+  | 'disbursement'
+  | 'repayment'
+  | 'adjustment_increase'
+  | 'adjustment_decrease';
+
+export interface DebtTransactionRow {
+  id: string;
+  debt_id: string;
+  transaction_id: string | null;
+  amount: number; // Positive integer minor units
+  role: DebtTransactionRole;
+  note: string | null;
+  occurred_at: number; // Unix ms
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface DebtTransactionWithDetails extends DebtTransactionRow {
+  account_id?: string | null;
+  account_name?: string | null;
+  account_currency?: string | null;
+}
+
+export interface RecordRepaymentInput {
+  debtId: string;
+  amountMinor: number; // Positive integer minor units
+  accountId?: string; // Optional: if provided, links to cash transaction
+  occurredAt?: number;
+  note?: string | null;
+}
+
+export interface RecordAdjustmentInput {
+  debtId: string;
+  amountMinor: number; // Positive integer minor units
+  direction: 'increase' | 'decrease'; // 'increase' adds to balance owed, 'decrease' reduces balance owed
+  note?: string | null;
+  occurredAt?: number;
+}
+
