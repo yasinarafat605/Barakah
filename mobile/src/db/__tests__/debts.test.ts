@@ -12,13 +12,15 @@ import {
   getDebtTimeline,
   recordRepayment,
   restoreRepayment,
-  softDeleteDebt,
+  cancelDebt,
+  restoreCancelledDebt,
   softDeleteRepayment,
   updateDebt,
   getDebtSummary,
   recordAdjustment,
   archiveDebt,
   restoreArchivedDebt,
+  isValidCivilDate,
 } from '../debts';
 import { getTransactions, softDeleteTransaction, restoreTransaction } from '../transactions';
 
@@ -210,6 +212,12 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
 
     it('strictly rejects overpayment beyond current outstanding principal', async () => {
       const cp = await createCounterparty({ name: 'Landlord' });
+      const acc = await createAccount({
+        name: 'Landlord Account',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
       const debt = await createDebt({
         counterpartyId: cp.id,
         direction: 'borrowed',
@@ -223,12 +231,19 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
         recordRepayment({
           debtId: debt.id,
           amountMinor: 150000,
+          accountId: acc.id,
         })
       ).rejects.toThrow(/cannot exceed outstanding principal/i);
     });
 
     it('automatically transitions debt status to settled when fully repaid', async () => {
       const cp = await createCounterparty({ name: 'Colleague' });
+      const acc = await createAccount({
+        name: 'Colleague Account',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
       const debt = await createDebt({
         counterpartyId: cp.id,
         direction: 'lent',
@@ -240,6 +255,7 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
       await recordRepayment({
         debtId: debt.id,
         amountMinor: 200000, // Exact full amount
+        accountId: acc.id,
       });
 
       const settledDebt = await getDebtById(debt.id);
@@ -251,6 +267,12 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
 
     it('soft-deletes repayment, restores balance, and automatically reopens settled debt', async () => {
       const cp = await createCounterparty({ name: 'Relative' });
+      const acc = await createAccount({
+        name: 'Relative Account',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
       const debt = await createDebt({
         counterpartyId: cp.id,
         direction: 'borrowed',
@@ -262,6 +284,7 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
       const repayment = await recordRepayment({
         debtId: debt.id,
         amountMinor: 100000,
+        accountId: acc.id,
       });
 
       // Verified settled
@@ -286,21 +309,29 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
 
     it('prevents deleting debt with repayment history', async () => {
       const cp = await createCounterparty({ name: 'Partner' });
+      const acc = await createAccount({
+        name: 'Partner Account',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
       const debt = await createDebt({
         counterpartyId: cp.id,
         direction: 'borrowed',
         originalPrincipalMinor: 100000,
         currency: 'BDT',
-        openingMode: 'existing_balance',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
       });
 
       await recordRepayment({
         debtId: debt.id,
         amountMinor: 50000,
+        accountId: acc.id,
       });
 
-      await expect(softDeleteDebt(debt.id)).rejects.toThrow(
-        /Cannot delete debt with repayment history/i
+      await expect(cancelDebt(debt.id)).rejects.toThrow(
+        /Cannot cancel a debt that has repayments/i
       );
     });
 
@@ -322,7 +353,7 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
         accountId: acc.id,
       });
 
-      await softDeleteDebt(debt.id);
+      await cancelDebt(debt.id);
 
       const activeDebts = await getDebts({ includeDeleted: false });
       expect(activeDebts.some((d) => d.id === debt.id)).toBe(false);
@@ -350,24 +381,33 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
 
     it('retrieves debt timeline with disbursement and repayment events', async () => {
       const cp = await createCounterparty({ name: 'Timeline Friend' });
+      const acc = await createAccount({
+        name: 'Timeline Bank',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
       const debt = await createDebt({
         counterpartyId: cp.id,
         direction: 'borrowed',
         originalPrincipalMinor: 500000,
         currency: 'BDT',
-        openingMode: 'existing_balance',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
         note: 'Initial agreement',
       });
 
       await recordRepayment({
         debtId: debt.id,
         amountMinor: 100000,
+        accountId: acc.id,
         note: 'Payment 1',
       });
 
       await recordRepayment({
         debtId: debt.id,
         amountMinor: 150000,
+        accountId: acc.id,
         note: 'Payment 2',
       });
 
@@ -574,7 +614,7 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
       expect(curAcc?.current_balance_poisha).toBe(100000);
     });
 
-    it('rejects soft-deleting a debt disbursement transaction via transactions screen when repayments exist', async () => {
+    it('strictly blocks generic deletion of every debt disbursement transaction via transactions screen', async () => {
       const cp = await createCounterparty({ name: 'Disbursement Safeguard Cp' });
       const acc = await createAccount({
         name: 'Disb Wallet',
@@ -597,18 +637,453 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
       const disbursementTx = timeline.find((t) => t.role === 'disbursement');
       expect(disbursementTx?.transaction_id).toBeDefined();
 
-      // Record a partial repayment
+      // 1. Generic deletion without repayments must be BLOCKED
+      await expect(
+        softDeleteTransaction(disbursementTx!.transaction_id!)
+      ).rejects.toThrow(/Cannot delete a debt disbursement transaction directly/i);
+
+      // 2. Generic deletion with repayments must also be BLOCKED
       await recordRepayment({
         debtId: debt.id,
         amountMinor: 20000,
+        accountId: acc.id,
       });
 
-      // Attempting to delete the disbursement from generic transactions must fail
       await expect(
         softDeleteTransaction(disbursementTx!.transaction_id!)
-      ).rejects.toThrow(
-        /Cannot delete debt disbursement transaction while repayments exist/i
+      ).rejects.toThrow(/Cannot delete a debt disbursement transaction directly/i);
+
+      // 3. Generic restoration of disbursement must also be BLOCKED
+      await expect(
+        restoreTransaction(disbursementTx!.transaction_id!)
+      ).rejects.toThrow(/Cannot restore a debt disbursement transaction directly/i);
+    });
+  });
+
+  describe('Dedicated Debt Cancellation & Atomicity', () => {
+    it('blocks cancellation of a debt that has active repayments', async () => {
+      const cp = await createCounterparty({ name: 'Cancel Repayment Test' });
+      const acc = await createAccount({
+        name: 'Cancel Repay Acc',
+        type: 'bank',
+        initialBalancePoisha: 500000,
+        currency: 'BDT',
+      });
+
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 100000,
+        currency: 'BDT',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
+      });
+
+      await recordRepayment({
+        debtId: debt.id,
+        amountMinor: 20000,
+        accountId: acc.id,
+      });
+
+      await expect(cancelDebt(debt.id)).rejects.toThrow(
+        /Cannot cancel a debt that has repayments/i
       );
+    });
+
+    it('blocks cancellation of a debt that has adjustments', async () => {
+      const cp = await createCounterparty({ name: 'Cancel Adj Test' });
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 100000,
+        currency: 'BDT',
+        openingMode: 'existing_balance',
+      });
+
+      await recordAdjustment({
+        debtId: debt.id,
+        amountMinor: 10000,
+        direction: 'decrease',
+      });
+
+      await expect(cancelDebt(debt.id)).rejects.toThrow(
+        /Cannot cancel a debt that has adjustments/i
+      );
+    });
+
+    it('atomically cancels newly entered debt and updates account, debt, and link, then restores completely', async () => {
+      const cp = await createCounterparty({ name: 'Atomic Cancel Cp' });
+      const acc = await createAccount({
+        name: 'Atomic Bank',
+        type: 'bank',
+        initialBalancePoisha: 200000, // ৳2,000
+        currency: 'BDT',
+      });
+
+      // 1. Create debt with cash: ৳1,000 borrowed -> account balance becomes ৳3,000
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 100000,
+        currency: 'BDT',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
+      });
+
+      let curAcc = await getAccountById(acc.id);
+      expect(curAcc?.current_balance_poisha).toBe(300000);
+
+      // 2. Atomically cancel newly entered debt
+      await cancelDebt(debt.id);
+
+      // Debt is soft-deleted
+      const activeDebts = await getDebts({ includeDeleted: false });
+      expect(activeDebts.some((d) => d.id === debt.id)).toBe(false);
+
+      const deletedDebt = await getDebtById(debt.id);
+      expect(deletedDebt?.deleted_at).not.toBeNull();
+
+      // Account balance reverted to initial ৳2,000
+      curAcc = await getAccountById(acc.id);
+      expect(curAcc?.current_balance_poisha).toBe(200000);
+
+      // 3. Atomically restore cancelled debt
+      await restoreCancelledDebt(debt.id);
+
+      const restoredDebt = await getDebtById(debt.id);
+      expect(restoredDebt?.deleted_at).toBeNull();
+      expect(restoredDebt?.status).toBe('active');
+
+      // Account balance restored back to ৳3,000
+      curAcc = await getAccountById(acc.id);
+      expect(curAcc?.current_balance_poisha).toBe(300000);
+    });
+  });
+
+  describe('Strict Real Calendar Date Validation', () => {
+    it('accurately validates real calendar dates and rejects rollover anomalies', () => {
+      // Valid leap day
+      expect(isValidCivilDate('2024-02-29')).toBe(true);
+      expect(isValidCivilDate('2000-02-29')).toBe(true);
+
+      // Invalid leap day (2026 and 1900 are not leap years)
+      expect(isValidCivilDate('2026-02-29')).toBe(false);
+      expect(isValidCivilDate('1900-02-29')).toBe(false);
+
+      // Invalid day (February 31, April 31)
+      expect(isValidCivilDate('2026-02-31')).toBe(false);
+      expect(isValidCivilDate('2026-04-31')).toBe(false);
+
+      // Invalid month
+      expect(isValidCivilDate('2026-13-10')).toBe(false);
+      expect(isValidCivilDate('2026-00-10')).toBe(false);
+      expect(isValidCivilDate('2026-13-40')).toBe(false);
+
+      // Valid standard dates
+      expect(isValidCivilDate('2026-01-31')).toBe(true);
+      expect(isValidCivilDate('2026-12-31')).toBe(true);
+      expect(isValidCivilDate('2026-09-13')).toBe(true);
+
+      // Malformed shapes
+      expect(isValidCivilDate('tomorrow')).toBe(false);
+      expect(isValidCivilDate('2026/09/13')).toBe(false);
+      expect(isValidCivilDate(null)).toBe(false);
+      expect(isValidCivilDate(undefined)).toBe(false);
+    });
+
+    it('rejects invalid civil dates on debt creation and update', async () => {
+      const cp = await createCounterparty({ name: 'Date Validation Cp' });
+
+      // Create with non-existent leap day
+      await expect(
+        createDebt({
+          counterpartyId: cp.id,
+          direction: 'borrowed',
+          originalPrincipalMinor: 50000,
+          openingMode: 'existing_balance',
+          dueDate: '2026-02-29',
+        })
+      ).rejects.toThrow(/valid real calendar date/i);
+
+      // Create with invalid month/day
+      await expect(
+        createDebt({
+          counterpartyId: cp.id,
+          direction: 'borrowed',
+          originalPrincipalMinor: 50000,
+          openingMode: 'existing_balance',
+          dueDate: '2026-13-40',
+        })
+      ).rejects.toThrow(/valid real calendar date/i);
+
+      const validDebt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 50000,
+        openingMode: 'existing_balance',
+        dueDate: '2026-09-20',
+      });
+
+      // Update with invalid day
+      await expect(
+        updateDebt(validDebt.id, { dueDate: '2026-04-31' })
+      ).rejects.toThrow(/valid real calendar date/i);
+    });
+
+    it('evaluates due today, due soon, and overdue states across timezones and locales', () => {
+      const baseMs = new Date(2026, 8, 13, 15, 30).getTime(); // Sep 13, 2026
+
+      // Due today (same civil calendar date)
+      expect(calculateDueState('active', '2026-09-13', 10000, baseMs)).toBe('due_soon');
+
+      // Due tomorrow / within 7 days
+      expect(calculateDueState('active', '2026-09-14', 10000, baseMs)).toBe('due_soon');
+      expect(calculateDueState('active', '2026-09-20', 10000, baseMs)).toBe('due_soon');
+
+      // Overdue (yesterday or earlier)
+      expect(calculateDueState('active', '2026-09-12', 10000, baseMs)).toBe('overdue');
+      expect(calculateDueState('active', '2025-09-13', 10000, baseMs)).toBe('overdue');
+
+      // Future active (> 7 days)
+      expect(calculateDueState('active', '2026-09-21', 10000, baseMs)).toBe('active');
+    });
+  });
+
+  describe('Adjustment Lifecycle & Restoration Bounds', () => {
+    it('strictly enforces bounds when restoring a decreasing adjustment', async () => {
+      const cp = await createCounterparty({ name: 'Adj Bounds Cp' });
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 100000, // ৳1,000
+        currency: 'BDT',
+        openingMode: 'existing_balance',
+      });
+
+      // 1. Record decreasing adjustment of ৳600
+      const adj1 = await recordAdjustment({
+        debtId: debt.id,
+        amountMinor: 60000,
+        direction: 'decrease',
+      });
+
+      // Outstanding is now ৳400
+      let cur = await getDebtById(debt.id);
+      expect(cur?.outstanding_principal).toBe(40000);
+
+      // 2. Soft-delete the adjustment -> outstanding returns to ৳1,000
+      await softDeleteRepayment(adj1.id);
+      cur = await getDebtById(debt.id);
+      expect(cur?.outstanding_principal).toBe(100000);
+
+      // 3. Record another decreasing adjustment of ৳700 -> outstanding is now ৳300
+      await recordAdjustment({
+        debtId: debt.id,
+        amountMinor: 70000,
+        direction: 'decrease',
+      });
+      cur = await getDebtById(debt.id);
+      expect(cur?.outstanding_principal).toBe(30000);
+
+      // 4. Attempting to restore adj1 (৳600) when only ৳300 is outstanding MUST FAIL bounds check!
+      await expect(restoreRepayment(adj1.id)).rejects.toThrow(
+        /Cannot restore adjustment_decrease: would exceed outstanding principal/i
+      );
+    });
+  });
+
+  describe('Archived-Debt Financial Mutation Rules', () => {
+    it('rejects all financial mutations and edits on an archived debt', async () => {
+      const cp = await createCounterparty({ name: 'Archived Mutation Cp' });
+      const acc = await createAccount({
+        name: 'Archived Mutation Acc',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
+
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 100000,
+        currency: 'BDT',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
+      });
+
+      // Record a partial repayment, then soft-delete it so we can test restoring it later
+      const rep = await recordRepayment({
+        debtId: debt.id,
+        amountMinor: 20000,
+        accountId: acc.id,
+      });
+      await softDeleteRepayment(rep.id);
+
+      // Archive the debt
+      await archiveDebt(debt.id);
+
+      // 1. Reject recording repayment
+      await expect(
+        recordRepayment({
+          debtId: debt.id,
+          amountMinor: 10000,
+          accountId: acc.id,
+        })
+      ).rejects.toThrow(/Cannot record repayment on an archived debt/i);
+
+      // 2. Reject restoring repayment
+      await expect(restoreRepayment(rep.id)).rejects.toThrow(
+        /Cannot restore transaction on an archived debt/i
+      );
+
+      // 3. Reject recording adjustment
+      await expect(
+        recordAdjustment({
+          debtId: debt.id,
+          amountMinor: 5000,
+          direction: 'decrease',
+        })
+      ).rejects.toThrow(/Cannot record adjustment on an archived debt/i);
+
+      // 4. Reject updating debt
+      await expect(
+        updateDebt(debt.id, { note: 'Attempted edit' })
+      ).rejects.toThrow(/Cannot edit an archived debt/i);
+
+      // 5. Reject cancelling debt
+      await expect(cancelDebt(debt.id)).rejects.toThrow(
+        /Cannot cancel an archived debt/i
+      );
+
+      // 6. Unarchive restores mutation capability
+      await restoreArchivedDebt(debt.id);
+      await expect(
+        recordRepayment({
+          debtId: debt.id,
+          amountMinor: 10000,
+          accountId: acc.id,
+        })
+      ).resolves.toBeDefined();
+    });
+  });
+
+  describe('Link-Role Semantics & Cross-Currency Safeguards', () => {
+    it('rejects cross-currency debt creation and repayments', async () => {
+      const cp = await createCounterparty({ name: 'Cross Currency Cp' });
+      const bdtAcc = await createAccount({
+        name: 'BDT Bank',
+        type: 'bank',
+        initialBalancePoisha: 100000,
+        currency: 'BDT',
+      });
+      const usdAcc = await createAccount({
+        name: 'USD Bank',
+        type: 'bank',
+        initialBalancePoisha: 100000,
+        currency: 'USD',
+      });
+
+      // 1. Opening debt in BDT with USD account fails
+      await expect(
+        createDebt({
+          counterpartyId: cp.id,
+          direction: 'borrowed',
+          originalPrincipalMinor: 50000,
+          currency: 'BDT',
+          openingMode: 'new_with_cash',
+          accountId: usdAcc.id,
+        })
+      ).rejects.toThrow(/must match debt currency/i);
+
+      // 2. Valid BDT debt creation
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 50000,
+        currency: 'BDT',
+        openingMode: 'new_with_cash',
+        accountId: bdtAcc.id,
+      });
+
+      // 3. Repayment in BDT debt with USD account fails
+      await expect(
+        recordRepayment({
+          debtId: debt.id,
+          amountMinor: 10000,
+          accountId: usdAcc.id,
+        })
+      ).rejects.toThrow(/must match debt currency/i);
+    });
+
+    it('requires accountId on repayment and verifies transaction attributes match', async () => {
+      const cp = await createCounterparty({ name: 'Repayment Attributes Cp' });
+      const acc = await createAccount({
+        name: 'Repayment Bank',
+        type: 'bank',
+        initialBalancePoisha: 200000,
+        currency: 'BDT',
+      });
+
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 100000,
+        currency: 'BDT',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
+      });
+
+      // Borrowed debt repayment creates an expense with cat_exp_loan_repayment
+      const rep = await recordRepayment({
+        debtId: debt.id,
+        amountMinor: 30000,
+        accountId: acc.id,
+      });
+
+      expect(rep.transaction_id).not.toBeNull();
+      const txs = await getTransactions({ accountId: acc.id });
+      const repTx = txs.find((t) => t.id === rep.transaction_id);
+      expect(repTx).toBeDefined();
+      expect(repTx?.amount).toBe(30000);
+      expect(repTx?.type).toBe('expense');
+      expect(repTx?.category_id).toBe('cat_exp_loan_repayment');
+    });
+  });
+
+  describe('Concurrent Overpayment Rejection', () => {
+    it('re-reads outstanding balance within exclusive transaction to reject overpayment', async () => {
+      const cp = await createCounterparty({ name: 'Concurrency Cp' });
+      const acc = await createAccount({
+        name: 'Concurrency Bank',
+        type: 'bank',
+        initialBalancePoisha: 1000000,
+        currency: 'BDT',
+      });
+
+      const debt = await createDebt({
+        counterpartyId: cp.id,
+        direction: 'borrowed',
+        originalPrincipalMinor: 50000,
+        currency: 'BDT',
+        openingMode: 'new_with_cash',
+        accountId: acc.id,
+      });
+
+      // First repayment of 40,000 succeeds (leaves 10,000 outstanding)
+      await recordRepayment({
+        debtId: debt.id,
+        amountMinor: 40000,
+        accountId: acc.id,
+      });
+
+      // Subsequent attempt of 20,000 fails because outstanding is now 10,000
+      await expect(
+        recordRepayment({
+          debtId: debt.id,
+          amountMinor: 20000,
+          accountId: acc.id,
+        })
+      ).rejects.toThrow(/cannot exceed outstanding principal/i);
     });
   });
 });

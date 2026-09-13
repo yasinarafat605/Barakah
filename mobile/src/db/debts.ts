@@ -15,6 +15,7 @@ import {
   DatabaseConnection,
   DebtDueState,
   DebtFilters,
+  DebtOpeningMode,
   DebtSummary,
   DebtTransactionRole,
   DebtTransactionRow,
@@ -53,6 +54,40 @@ export function generateTransactionId(): string {
 }
 
 /**
+ * Strict calendar date validation that round-trips year, month, and day without JavaScript rollover.
+ * Validates real calendar dates in YYYY-MM-DD format (including leap years).
+ */
+export function isValidCivilDate(dateStr: string | null | undefined): boolean {
+  if (typeof dateStr !== 'string') return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+
+  const [yearStr, monthStr, dayStr] = dateStr.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const day = parseInt(dayStr, 10);
+
+  if (year < 1000 || year > 9999) return false;
+  if (month < 1 || month > 12) return false;
+
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+  const daysInMonth = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  if (day < 1 || day > daysInMonth[month - 1]) return false;
+
+  // Round trip check using UTC date components to eliminate JS date rollover
+  const utcDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utcDate.getUTCFullYear() !== year ||
+    utcDate.getUTCMonth() !== month - 1 ||
+    utcDate.getUTCDate() !== day
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Computes the due state for a debt given its status, due date, and outstanding balance.
  * Civil calendar date strings (YYYY-MM-DD) eliminate device timezone and DST drift.
  */
@@ -71,11 +106,13 @@ export function calculateDueState(
 
   let dueDateStr: string;
   if (typeof dueDate === 'string') {
+    if (!isValidCivilDate(dueDate)) return 'active';
     dueDateStr = dueDate;
   } else {
     const d = new Date(dueDate);
     const pad = (n: number) => String(n).padStart(2, '0');
     dueDateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (!isValidCivilDate(dueDateStr)) return 'active';
   }
 
   const now = new Date(nowMs);
@@ -122,9 +159,8 @@ export async function createDebt(
 
   // Validate civil due date format (YYYY-MM-DD)
   if (input.dueDate !== undefined && input.dueDate !== null) {
-    const civilDateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!civilDateRegex.test(input.dueDate)) {
-      throw new Error(`dueDate must be in YYYY-MM-DD format (received: ${input.dueDate})`);
+    if (!isValidCivilDate(input.dueDate)) {
+      throw new Error(`dueDate must be a valid real calendar date in YYYY-MM-DD format (received: ${input.dueDate})`);
     }
   }
 
@@ -201,21 +237,24 @@ export async function createDebt(
       now
     );
 
-    // 3. Insert initial disbursement record into debt_transactions
-    const dtxId = generateDebtTransactionId();
-    await db.runAsync(
-      `INSERT INTO debt_transactions (
-         id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
-       ) VALUES (?, ?, ?, ?, 'disbursement', ?, ?, ?, ?, NULL);`,
-      dtxId,
-      debtId,
-      linkedTransactionId,
-      input.originalPrincipalMinor,
-      note,
-      openedAt,
-      now,
-      now
-    );
+    // 3. Insert initial disbursement record into debt_transactions ONLY for new_with_cash
+    // For existing_balance agreements, the principal is held on debts.original_principal with zero cash movement
+    if (input.openingMode === 'new_with_cash' && linkedTransactionId) {
+      const dtxId = generateDebtTransactionId();
+      await db.runAsync(
+        `INSERT INTO debt_transactions (
+           id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
+         ) VALUES (?, ?, ?, ?, 'disbursement', ?, ?, ?, ?, NULL);`,
+        dtxId,
+        debtId,
+        linkedTransactionId,
+        input.originalPrincipalMinor,
+        note,
+        openedAt,
+        now,
+        now
+      );
+    }
   });
 
   const created = await getDebtById(debtId, db);
@@ -257,6 +296,8 @@ export async function recordRepayment(
       original_principal: number;
       currency: string;
       direction: 'borrowed' | 'lent';
+      archived_at: number | null;
+      deleted_at: number | null;
       total_repaid: number;
     }>(
       `SELECT
@@ -265,6 +306,8 @@ export async function recordRepayment(
          d.original_principal,
          d.currency,
          d.direction,
+         d.archived_at,
+         d.deleted_at,
          COALESCE(SUM(
            CASE
              WHEN dt.role = 'repayment' AND dt.deleted_at IS NULL THEN dt.amount
@@ -284,6 +327,10 @@ export async function recordRepayment(
       throw new Error(`Debt not found: ${input.debtId}`);
     }
 
+    if (debtRow.archived_at !== null) {
+      throw new Error('Cannot record repayment on an archived debt. Restore the debt from archive first.');
+    }
+
     if (debtRow.status === 'settled') {
       throw new Error('Cannot record repayment on an already settled debt.');
     }
@@ -296,48 +343,50 @@ export async function recordRepayment(
       );
     }
 
-    // 2. If account is provided, create linked cash transaction
-    if (input.accountId) {
-      const acc = await db.getFirstAsync<{ id: string; currency: string }>(
-        'SELECT id, currency FROM accounts WHERE id = ?;',
-        input.accountId
-      );
-      if (!acc) {
-        throw new Error(`Account not found: ${input.accountId}`);
-      }
-      if (acc.currency !== debtRow.currency) {
-        throw new Error(
-          `Account currency (${acc.currency}) must match debt currency (${debtRow.currency})`
-        );
-      }
+    // 2. Validate account and create linked cash transaction (repayment requires transaction_id)
+    if (!input.accountId) {
+      throw new Error('Account ID is required to record a debt repayment transaction.');
+    }
 
-      linkedTxId = generateTransactionId();
-
-      // Repayment direction:
-      // Borrowed debt repayment -> user pays money out (expense, cat_exp_loan_repayment)
-      // Lent debt repayment received -> user receives money in (income, cat_inc_loan_repayment_received)
-      const txType = debtRow.direction === 'borrowed' ? 'expense' : 'income';
-      const categoryId =
-        debtRow.direction === 'borrowed'
-          ? 'cat_exp_loan_repayment'
-          : 'cat_inc_loan_repayment_received';
-
-      await db.runAsync(
-        `INSERT INTO transactions (
-           id, account_id, category_id, amount, type, transfer_id, transfer_role,
-           related_account_id, note, timestamp, created_at, updated_at, deleted_at
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL);`,
-        linkedTxId,
-        input.accountId,
-        categoryId,
-        input.amountMinor,
-        txType,
-        note,
-        occurredAt,
-        now,
-        now
+    const acc = await db.getFirstAsync<{ id: string; currency: string }>(
+      'SELECT id, currency FROM accounts WHERE id = ?;',
+      input.accountId
+    );
+    if (!acc) {
+      throw new Error(`Account not found: ${input.accountId}`);
+    }
+    if (acc.currency !== debtRow.currency) {
+      throw new Error(
+        `Account currency (${acc.currency}) must match debt currency (${debtRow.currency})`
       );
     }
+
+    linkedTxId = generateTransactionId();
+
+    // Repayment direction:
+    // Borrowed debt repayment -> user pays money out (expense, cat_exp_loan_repayment)
+    // Lent debt repayment received -> user receives money in (income, cat_inc_loan_repayment_received)
+    const txType = debtRow.direction === 'borrowed' ? 'expense' : 'income';
+    const categoryId =
+      debtRow.direction === 'borrowed'
+        ? 'cat_exp_loan_repayment'
+        : 'cat_inc_loan_repayment_received';
+
+    await db.runAsync(
+      `INSERT INTO transactions (
+         id, account_id, category_id, amount, type, transfer_id, transfer_role,
+         related_account_id, note, timestamp, created_at, updated_at, deleted_at
+       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL);`,
+      linkedTxId,
+      input.accountId,
+      categoryId,
+      input.amountMinor,
+      txType,
+      note,
+      occurredAt,
+      now,
+      now
+    );
 
     // 3. Insert debt_transaction entry
     await db.runAsync(
@@ -406,12 +455,16 @@ export async function recordAdjustment(
       id: string;
       status: string;
       original_principal: number;
+      archived_at: number | null;
+      deleted_at: number | null;
       total_repaid: number;
     }>(
       `SELECT
          d.id,
          d.status,
          d.original_principal,
+         d.archived_at,
+         d.deleted_at,
          COALESCE(SUM(
            CASE
              WHEN dt.role = 'repayment' AND dt.deleted_at IS NULL THEN dt.amount
@@ -429,6 +482,10 @@ export async function recordAdjustment(
 
     if (!debtRow) {
       throw new Error(`Debt not found: ${input.debtId}`);
+    }
+
+    if (debtRow.archived_at !== null) {
+      throw new Error('Cannot record adjustment on an archived debt. Restore the debt from archive first.');
     }
 
     const currentOutstanding = debtRow.original_principal - debtRow.total_repaid;
@@ -559,15 +616,21 @@ export async function softDeleteRepayment(
 
   await runExclusiveTransaction(db, async () => {
     if (dtx.role === 'disbursement') {
-      const repaymentCount = await db.getFirstAsync<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM debt_transactions WHERE debt_id = ? AND role = 'repayment' AND deleted_at IS NULL;",
-        dtx.debt_id
+      throw new Error(
+        'Cannot delete a debt disbursement transaction directly. Use the debt cancellation operation instead.'
       );
-      if ((repaymentCount?.count ?? 0) > 0) {
-        throw new Error(
-          'Cannot delete debt disbursement transaction while repayments exist. Settle or delete repayments first.'
-        );
-      }
+    }
+
+    // Check parent debt is not archived
+    const parentDebt = await db.getFirstAsync<{ id: string; archived_at: number | null }>(
+      'SELECT id, archived_at FROM debts WHERE id = ?;',
+      dtx.debt_id
+    );
+    if (!parentDebt) {
+      throw new Error(`Debt not found: ${dtx.debt_id}`);
+    }
+    if (parentDebt.archived_at !== null) {
+      throw new Error('Cannot delete transaction belonging to an archived debt. Restore the debt from archive first.');
     }
 
     // Soft delete debt transaction
@@ -604,7 +667,7 @@ export const softDeleteDebtTransaction = softDeleteRepayment;
 
 /**
  * Restores a soft-deleted repayment or adjustment and its linked cash transaction atomically.
- * Automatically settles debt if outstanding reaches 0.
+ * Automatically settles debt if outstanding reaches 0, or reopens if adjustment_increase is restored.
  */
 export async function restoreRepayment(
   debtTransactionId: string,
@@ -619,23 +682,65 @@ export async function restoreRepayment(
     transaction_id: string | null;
     role: string;
     amount: number;
-  }>('SELECT id, debt_id, transaction_id, role, amount FROM debt_transactions WHERE id = ?;', debtTransactionId);
+    deleted_at: number | null;
+  }>('SELECT id, debt_id, transaction_id, role, amount, deleted_at FROM debt_transactions WHERE id = ?;', debtTransactionId);
 
-  if (!dtx) {
-    throw new Error(`Debt transaction not found: ${debtTransactionId}`);
+  if (!dtx || dtx.deleted_at === null) {
+    throw new Error(`Deleted debt transaction not found: ${debtTransactionId}`);
+  }
+
+  if (dtx.role === 'disbursement') {
+    throw new Error(
+      'Cannot restore a debt disbursement transaction directly. Use the debt restoration operation instead.'
+    );
   }
 
   await runExclusiveTransaction(db, async () => {
-    // Check if restoring this repayment would exceed outstanding principal
-    if (dtx.role === 'repayment') {
-      const debt = await getDebtById(dtx.debt_id, db);
-      if (debt) {
-        const newOutstanding = debt.outstanding_principal - dtx.amount;
-        if (newOutstanding < 0) {
-          throw new Error(
-            `Cannot restore repayment: would exceed outstanding principal by ${Math.abs(newOutstanding)} minor units.`
-          );
-        }
+    const debtRow = await db.getFirstAsync<{
+      id: string;
+      status: string;
+      original_principal: number;
+      archived_at: number | null;
+      deleted_at: number | null;
+      total_repaid: number;
+    }>(
+      `SELECT
+         d.id,
+         d.status,
+         d.original_principal,
+         d.archived_at,
+         d.deleted_at,
+         COALESCE(SUM(
+           CASE
+             WHEN dt.role = 'repayment' AND dt.deleted_at IS NULL THEN dt.amount
+             WHEN dt.role = 'adjustment_decrease' AND dt.deleted_at IS NULL THEN dt.amount
+             WHEN dt.role = 'adjustment_increase' AND dt.deleted_at IS NULL THEN -dt.amount
+             ELSE 0
+           END
+         ), 0) AS total_repaid
+       FROM debts d
+       LEFT JOIN debt_transactions dt ON d.id = dt.debt_id
+       WHERE d.id = ?
+       GROUP BY d.id;`,
+      dtx.debt_id
+    );
+
+    if (!debtRow || debtRow.deleted_at !== null) {
+      throw new Error(`Debt not found: ${dtx.debt_id}`);
+    }
+
+    if (debtRow.archived_at !== null) {
+      throw new Error('Cannot restore transaction on an archived debt. Restore the debt from archive first.');
+    }
+
+    const currentOutstanding = debtRow.original_principal - debtRow.total_repaid;
+
+    // Bounds checking for repayment and adjustment_decrease
+    if (dtx.role === 'repayment' || dtx.role === 'adjustment_decrease') {
+      if (dtx.amount > currentOutstanding) {
+        throw new Error(
+          `Cannot restore ${dtx.role}: would exceed outstanding principal by ${dtx.amount - currentOutstanding} minor units.`
+        );
       }
     }
 
@@ -653,12 +758,22 @@ export async function restoreRepayment(
       );
     }
 
-    const debt = await getDebtById(dtx.debt_id, db);
-    if (debt && debt.outstanding_principal === 0) {
+    const newOutstanding =
+      dtx.role === 'adjustment_increase'
+        ? currentOutstanding + dtx.amount
+        : currentOutstanding - dtx.amount;
+
+    if (newOutstanding === 0) {
       await db.runAsync(
         "UPDATE debts SET status = 'settled', updated_at = ? WHERE id = ?;",
         now,
-        debt.id
+        debtRow.id
+      );
+    } else if (newOutstanding > 0 && debtRow.status === 'settled') {
+      await db.runAsync(
+        "UPDATE debts SET status = 'active', updated_at = ? WHERE id = ?;",
+        now,
+        debtRow.id
       );
     }
   });
@@ -814,15 +929,18 @@ export async function updateDebt(
   const db = customDb ?? (await getDatabase());
   const existing = await getDebtById(id, db);
 
-  if (!existing) {
+  if (!existing || existing.deleted_at !== null) {
     throw new Error(`Debt not found: ${id}`);
+  }
+
+  if (existing.archived_at !== null) {
+    throw new Error('Cannot edit an archived debt. Restore the debt from archive first.');
   }
 
   // Validate civil due date format (YYYY-MM-DD) if provided
   if (input.dueDate !== undefined && input.dueDate !== null) {
-    const civilDateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!civilDateRegex.test(input.dueDate)) {
-      throw new Error(`dueDate must be in YYYY-MM-DD format (received: ${input.dueDate})`);
+    if (!isValidCivilDate(input.dueDate)) {
+      throw new Error(`dueDate must be a valid real calendar date in YYYY-MM-DD format (received: ${input.dueDate})`);
     }
   }
 
@@ -850,34 +968,57 @@ export async function updateDebt(
 }
 
 /**
- * Soft-deletes a debt.
- * Rejects if repayments or adjustments have already been made (financial integrity).
+ * Dedicated cancellation operation for a newly entered debt agreement.
+ * Strictly enforces:
+ * - Debt cannot be archived.
+ * - Debt cannot have any repayment history or adjustments.
+ * - Atomically soft-deletes the debt, disbursement link, and linked cash transaction.
+ * - Entire operation is atomic and rolled back on any error.
  */
-export async function softDeleteDebt(
+export async function cancelDebt(
   id: string,
   customDb?: DatabaseConnection
 ): Promise<void> {
   const db = customDb ?? (await getDatabase());
-  const debt = await getDebtById(id, db);
-
-  if (!debt) {
-    throw new Error(`Debt not found: ${id}`);
-  }
-
-  const txCountRow = await db.getFirstAsync<{ count: number }>(
-    "SELECT COUNT(*) AS count FROM debt_transactions WHERE debt_id = ? AND role IN ('repayment', 'adjustment_increase', 'adjustment_decrease') AND deleted_at IS NULL;",
-    id
-  );
-  if ((txCountRow?.count ?? 0) > 0) {
-    throw new Error(
-      'Cannot delete debt with repayment history or adjustments. Settle or archive the debt instead.'
-    );
-  }
-
   const now = Date.now();
 
   await runExclusiveTransaction(db, async () => {
-    // Soft delete debt
+    const debt = await db.getFirstAsync<{
+      id: string;
+      opening_mode: DebtOpeningMode;
+      archived_at: number | null;
+      deleted_at: number | null;
+    }>(
+      'SELECT id, opening_mode, archived_at, deleted_at FROM debts WHERE id = ?;',
+      id
+    );
+
+    if (!debt || debt.deleted_at !== null) {
+      throw new Error(`Debt not found: ${id}`);
+    }
+
+    if (debt.archived_at !== null) {
+      throw new Error('Cannot cancel an archived debt. Restore the debt from archive first.');
+    }
+
+    const txCounts = await db.getFirstAsync<{ repayments: number; adjustments: number }>(
+      `SELECT
+         COUNT(CASE WHEN role = 'repayment' AND deleted_at IS NULL THEN 1 END) AS repayments,
+         COUNT(CASE WHEN role IN ('adjustment_increase', 'adjustment_decrease') AND deleted_at IS NULL THEN 1 END) AS adjustments
+       FROM debt_transactions
+       WHERE debt_id = ?;`,
+      id
+    );
+
+    if ((txCounts?.repayments ?? 0) > 0) {
+      throw new Error('Cannot cancel a debt that has repayments.');
+    }
+
+    if ((txCounts?.adjustments ?? 0) > 0) {
+      throw new Error('Cannot cancel a debt that has adjustments.');
+    }
+
+    // 1. Soft-delete the debt record
     await db.runAsync(
       'UPDATE debts SET deleted_at = ?, updated_at = ? WHERE id = ?;',
       now,
@@ -885,31 +1026,92 @@ export async function softDeleteDebt(
       id
     );
 
-    // Soft delete disbursement transactions linked to this debt
-    const disbursements = await db.getAllAsync<{ id: string; transaction_id: string | null }>(
-      "SELECT id, transaction_id FROM debt_transactions WHERE debt_id = ? AND role = 'disbursement';",
-      id
-    );
-
-    for (const dtx of disbursements) {
-      await db.runAsync(
-        'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
-        now,
-        now,
-        dtx.id
+    // 2. If new_with_cash, atomically soft-delete disbursement and linked cash transaction
+    if (debt.opening_mode === 'new_with_cash') {
+      const disbursements = await db.getAllAsync<{ id: string; transaction_id: string | null }>(
+        "SELECT id, transaction_id FROM debt_transactions WHERE debt_id = ? AND role = 'disbursement' AND deleted_at IS NULL;",
+        id
       );
 
-      if (dtx.transaction_id) {
+      for (const dtx of disbursements) {
         await db.runAsync(
-          'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
+          'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
           now,
           now,
-          dtx.transaction_id
+          dtx.id
         );
+
+        if (dtx.transaction_id) {
+          await db.runAsync(
+            'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL;',
+            now,
+            now,
+            dtx.transaction_id
+          );
+        }
       }
     }
   });
 }
+
+/**
+ * Restores a cancelled debt agreement, its disbursement link, and cash transaction atomically.
+ */
+export async function restoreCancelledDebt(
+  id: string,
+  customDb?: DatabaseConnection
+): Promise<void> {
+  const db = customDb ?? (await getDatabase());
+  const now = Date.now();
+
+  await runExclusiveTransaction(db, async () => {
+    const debt = await db.getFirstAsync<{
+      id: string;
+      opening_mode: DebtOpeningMode;
+      deleted_at: number | null;
+    }>(
+      'SELECT id, opening_mode, deleted_at FROM debts WHERE id = ?;',
+      id
+    );
+
+    if (!debt || debt.deleted_at === null) {
+      throw new Error(`Cancelled debt not found or not deleted: ${id}`);
+    }
+
+    // 1. Restore the debt record
+    await db.runAsync(
+      'UPDATE debts SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
+      now,
+      id
+    );
+
+    // 2. If new_with_cash, restore disbursement and linked cash transaction
+    if (debt.opening_mode === 'new_with_cash') {
+      const disbursements = await db.getAllAsync<{ id: string; transaction_id: string | null }>(
+        "SELECT id, transaction_id FROM debt_transactions WHERE debt_id = ? AND role = 'disbursement' AND deleted_at IS NOT NULL;",
+        id
+      );
+
+      for (const dtx of disbursements) {
+        await db.runAsync(
+          'UPDATE debt_transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
+          now,
+          dtx.id
+        );
+
+        if (dtx.transaction_id) {
+          await db.runAsync(
+            'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL;',
+            now,
+            dtx.transaction_id
+          );
+        }
+      }
+    }
+  });
+}
+
+export const softDeleteDebt = cancelDebt;
 
 /**
  * Retrieves the full repayment and disbursement timeline for a debt.

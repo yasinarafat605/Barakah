@@ -288,7 +288,7 @@ export interface DebtTransactionWithDetails extends DebtTransactionRow {
 export interface RecordRepaymentInput {
   debtId: string;
   amountMinor: number; // Positive integer minor units
-  accountId?: string; // Optional: if provided, links to cash transaction
+  accountId: string; // Required: repayment requires cash transaction link
   occurredAt?: number;
   note?: string | null;
 }

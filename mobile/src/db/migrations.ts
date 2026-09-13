@@ -7,9 +7,10 @@ import { DatabaseConnection, Migration } from './types';
 import { migration001 } from './migrations/001_initial_schema';
 import { migration002 } from './migrations/002_categories_and_transfers';
 import { migration003 } from './migrations/003_debts_and_counterparties';
+import { migration004 } from './migrations/004_debt_ledger_integrity_upgrade';
 import { runExclusiveTransaction } from './client';
 
-export const MIGRATIONS: Migration[] = [migration001, migration002, migration003];
+export const MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004];
 
 export interface MigrationResult {
   applied: number;

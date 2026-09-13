@@ -24,17 +24,19 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
   describe('Migration Engine', () => {
     it('applies migrations from scratch cleanly and tracks them in schema_migrations', async () => {
       const result = await runMigrations(db);
-      expect(result.applied).toBe(3);
-      expect(result.versions).toEqual([1, 2, 3]);
+      expect(result.applied).toBe(4);
+      expect(result.versions).toEqual([1, 2, 3, 4]);
 
       const applied = await getAppliedMigrations(db);
-      expect(applied).toHaveLength(3);
+      expect(applied).toHaveLength(4);
       expect(applied[0].version).toBe(1);
       expect(applied[0].name).toBe('001_initial_schema');
       expect(applied[1].version).toBe(2);
       expect(applied[1].name).toBe('002_categories_and_transfers');
       expect(applied[2].version).toBe(3);
       expect(applied[2].name).toBe('003_debts_and_counterparties');
+      expect(applied[3].version).toBe(4);
+      expect(applied[3].name).toBe('004_debt_ledger_integrity_upgrade');
       expect(typeof applied[0].applied_at).toBe('number');
     });
 

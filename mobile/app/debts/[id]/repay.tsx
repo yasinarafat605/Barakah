@@ -37,7 +37,6 @@ export default function AddRepaymentModal() {
   const [debt, setDebt] = useState<DebtWithDetails | null>(null);
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>('');
-  const [isCash] = useState(true);
   const [amountStr, setAmountStr] = useState('');
   const [note, setNote] = useState('');
   
@@ -130,8 +129,8 @@ export default function AddRepaymentModal() {
       return;
     }
 
-    // 3. Account validation if cash
-    if (isCash && !selectedAccountId) {
+    // 3. Account validation
+    if (!selectedAccountId) {
       setValidationError(t('debts.errors.accountRequired'));
       return;
     }
@@ -147,7 +146,7 @@ export default function AddRepaymentModal() {
       await recordRepayment({
         debtId: debt.id,
         amountMinor: parsedAmount,
-        accountId: isCash ? selectedAccountId : undefined,
+        accountId: selectedAccountId,
         occurredAt: parsedTimestamp,
         note: note.trim() || undefined,
       });
