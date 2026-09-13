@@ -229,6 +229,9 @@
     "repaymentSuccess": "পরিশোধ সফলভাবে রেকর্ড করা হয়েছে",
     "repaymentDeleted": "পরিশোধ রেকর্ড মুছে ফেলা হয়েছে",
     "repaymentRestored": "পরিশোধ সফলভাবে পুনরুদ্ধার করা হয়েছে",
+    "repayment": "পরিশোধ",
+    "disbursement": "বিতরণ",
+    "openingBalance": "প্রারম্ভিক স্থিতি",
     "errors": {
       "counterpartyRequired": "অনুগ্রহ করে একজন ব্যক্তি বা প্রতিষ্ঠান নির্বাচন করুন",
       "amountRequired": "অনুগ্রহ করে টাকার পরিমাণ লিখুন",

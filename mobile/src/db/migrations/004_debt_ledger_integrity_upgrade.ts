@@ -1,228 +1,386 @@
 import { Migration, DatabaseConnection } from '../types';
 
+/**
+ * Converts legacy integer or text due_date to a civil date string (YYYY-MM-DD).
+ * Uses local calendar components (getFullYear, getMonth, getDate) to preserve
+ * the exact civil date the user entered on their device, preventing timezone shifts.
+ */
+export function convertLegacyDueDateToCivilDate(dueDate: unknown): string | null {
+  if (dueDate === null || dueDate === undefined) return null;
+  if (typeof dueDate === 'string') {
+    const trimmed = dueDate.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+    const parsed = Number(trimmed);
+    if (!isNaN(parsed) && Number.isFinite(parsed)) {
+      dueDate = parsed;
+    } else {
+      return null;
+    }
+  }
+  if (typeof dueDate === 'number' && Number.isFinite(dueDate) && dueDate > 0) {
+    // If epoch seconds (< 100000000000), convert to ms
+    const ms = dueDate < 100000000000 ? dueDate * 1000 : dueDate;
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return null;
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  return null;
+}
+
 async function applyMigration004(db: DatabaseConnection): Promise<void> {
   // Step 1: Pre-migration metrics and schema inspection
   const debtsCountBefore = await db.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) AS count FROM debts;'
   );
-  const repaymentsCountBefore = await db.getFirstAsync<{ count: number }>(
-    "SELECT COUNT(*) AS count FROM debt_transactions WHERE role = 'repayment';"
-  );
-  const realDisbursementsBefore = await db.getFirstAsync<{ count: number }>(
-    "SELECT COUNT(*) AS count FROM debt_transactions WHERE role = 'disbursement' AND transaction_id IS NOT NULL;"
+  const debtTxCountBefore = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM debt_transactions;'
   );
 
   // Check if archived_at column already exists in source debts table
   const debtsColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(debts);');
   const hasArchivedAt = debtsColumns.some((col) => col.name === 'archived_at');
 
-  // Disable foreign keys temporarily during table rebuild
-  await db.execAsync('PRAGMA foreign_keys = OFF;');
+  // Step 2: Validate ledger history and calculate lifecycle state for each debt
+  // Exclude soft-deleted debt movements (dt.deleted_at IS NOT NULL)
+  // Exclude linked transactions when the transaction is soft-deleted (tx.deleted_at IS NOT NULL)
+  // Apply legacy adjustment semantics (notes with 'increase' or 'add' increase debt; else decrease)
+  // Check for negative balances and throw immediately to roll back
+  const legacyDebts = await db.getAllAsync<{
+    id: string;
+    counterparty_id: string;
+    direction: 'borrowed' | 'lent';
+    original_principal: number;
+    currency: string;
+    opening_mode: string;
+    opened_at: number;
+    due_date: unknown;
+    status: string;
+    note: string | null;
+    created_at: number;
+    updated_at: number;
+    archived_at?: number | null;
+    deleted_at?: number | null;
+    total_repaid: number;
+  }>(`
+    SELECT
+      d.id,
+      d.counterparty_id,
+      d.direction,
+      d.original_principal,
+      d.currency,
+      d.opening_mode,
+      d.opened_at,
+      d.due_date,
+      d.status,
+      d.note,
+      d.created_at,
+      d.updated_at,
+      ${hasArchivedAt ? 'd.archived_at' : 'NULL AS archived_at'},
+      d.deleted_at,
+      COALESCE(SUM(
+        CASE
+          WHEN dt.deleted_at IS NOT NULL THEN 0
+          WHEN dt.transaction_id IS NOT NULL AND tx.deleted_at IS NOT NULL THEN 0
+          WHEN dt.role = 'repayment' THEN dt.amount
+          WHEN dt.role = 'adjustment_decrease' THEN dt.amount
+          WHEN dt.role = 'adjustment_increase' THEN -dt.amount
+          WHEN dt.role = 'adjustment' AND (dt.note LIKE '%increase%' OR dt.note LIKE '%add%') THEN -dt.amount
+          WHEN dt.role = 'adjustment' THEN dt.amount
+          ELSE 0
+        END
+      ), 0) AS total_repaid
+    FROM debts d
+    LEFT JOIN debt_transactions dt ON d.id = dt.debt_id
+    LEFT JOIN transactions tx ON dt.transaction_id = tx.id
+    GROUP BY d.id;
+  `);
 
-  try {
-    // Step 2: Rebuild counterparties with integer typeof constraints on timestamps
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS counterparties_new (
-        id TEXT PRIMARY KEY NOT NULL,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL CHECK (type IN ('person', 'business', 'organisation', 'other')),
-        phone TEXT,
-        email TEXT,
-        note TEXT,
-        avatar_color TEXT,
-        is_archived INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer'),
-        updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer')
+  const processedDebts = legacyDebts.map((d) => {
+    const originalPrincipal = Number(d.original_principal);
+    const totalRepaid = Number(d.total_repaid);
+    const outstanding = originalPrincipal - totalRepaid;
+
+    if (outstanding < 0) {
+      throw new Error(
+        `Migration 004 integrity check failed: Debt ${d.id} has corrupted negative outstanding balance (${outstanding}). Rolling back migration.`
       );
+    }
 
-      INSERT INTO counterparties_new (
-        id, name, type, phone, email, note, avatar_color, is_archived, created_at, updated_at
-      )
-      SELECT
-        id, name, type, phone, email, note, avatar_color, is_archived,
-        CAST(created_at AS INTEGER), CAST(updated_at AS INTEGER)
-      FROM counterparties;
+    let targetStatus: 'active' | 'settled';
+    if (outstanding === 0) {
+      targetStatus = 'settled';
+    } else {
+      targetStatus = 'active';
+    }
 
-      DROP TABLE counterparties;
-      ALTER TABLE counterparties_new RENAME TO counterparties;
+    // Preserve archived state without unarchiving
+    let targetArchivedAt: number | null = null;
+    if (d.status === 'archived' || (d.archived_at !== null && d.archived_at !== undefined)) {
+      targetArchivedAt = Number(d.archived_at ?? d.updated_at ?? d.created_at ?? Date.now());
+    }
 
-      CREATE INDEX IF NOT EXISTS idx_counterparties_name ON counterparties(name);
-      CREATE INDEX IF NOT EXISTS idx_counterparties_archived ON counterparties(is_archived);
-    `);
+    const civilDueDate = convertLegacyDueDateToCivilDate(d.due_date);
 
-    // Step 3: Rebuild debts table
-    // Converts integer due_date to YYYY-MM-DD
-    // Converts status 'archived' -> 'active' + populates archived_at
-    // Enforces CHECK constraints
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS debts_new (
-        id TEXT PRIMARY KEY NOT NULL,
-        counterparty_id TEXT NOT NULL REFERENCES counterparties(id) ON DELETE RESTRICT,
-        direction TEXT NOT NULL CHECK (direction IN ('borrowed', 'lent')),
-        original_principal INTEGER NOT NULL CHECK (typeof(original_principal) = 'integer' AND original_principal > 0),
-        currency TEXT NOT NULL DEFAULT 'BDT',
-        opening_mode TEXT NOT NULL CHECK (opening_mode IN ('new_with_cash', 'existing_balance')),
-        opened_at INTEGER NOT NULL CHECK (typeof(opened_at) = 'integer'),
-        due_date TEXT CHECK (due_date IS NULL OR due_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-        status TEXT NOT NULL CHECK (status IN ('active', 'settled')),
-        note TEXT,
-        created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer'),
-        updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer'),
-        archived_at INTEGER CHECK (archived_at IS NULL OR typeof(archived_at) = 'integer'),
-        deleted_at INTEGER CHECK (deleted_at IS NULL OR typeof(deleted_at) = 'integer')
-      );
-    `);
+    return {
+      ...d,
+      original_principal: originalPrincipal,
+      status: targetStatus,
+      archived_at: targetArchivedAt,
+      due_date: civilDueDate,
+    };
+  });
 
-    const archivedAtExpression = hasArchivedAt
-      ? 'CASE WHEN status = \'archived\' THEN CAST(COALESCE(archived_at, updated_at, created_at) AS INTEGER) ELSE archived_at END'
-      : 'CASE WHEN status = \'archived\' THEN CAST(COALESCE(updated_at, created_at) AS INTEGER) ELSE NULL END';
+  // Step 3: Populate staging backup tables (without foreign key constraints)
+  await db.execAsync(`
+    CREATE TABLE _backup_counterparties (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      note TEXT,
+      avatar_color TEXT,
+      is_archived INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
 
-    await db.execAsync(`
-      INSERT INTO debts_new (
+    INSERT INTO _backup_counterparties (
+      id, name, type, phone, email, note, avatar_color, is_archived, created_at, updated_at
+    )
+    SELECT
+      id, name, type, phone, email, note, avatar_color, is_archived,
+      CAST(created_at AS INTEGER), CAST(updated_at AS INTEGER)
+    FROM counterparties;
+
+    CREATE TABLE _backup_debts (
+      id TEXT PRIMARY KEY NOT NULL,
+      counterparty_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      original_principal INTEGER NOT NULL,
+      currency TEXT NOT NULL,
+      opening_mode TEXT NOT NULL,
+      opened_at INTEGER NOT NULL,
+      due_date TEXT,
+      status TEXT NOT NULL,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER,
+      deleted_at INTEGER
+    );
+
+    CREATE TABLE _backup_debt_tx (
+      id TEXT PRIMARY KEY NOT NULL,
+      debt_id TEXT NOT NULL,
+      transaction_id TEXT,
+      amount INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      note TEXT,
+      occurred_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      deleted_at INTEGER
+    );
+
+    INSERT INTO _backup_debt_tx (
+      id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
+    )
+    SELECT
+      id,
+      debt_id,
+      transaction_id,
+      CAST(amount AS INTEGER),
+      CASE
+        WHEN role = 'disbursement' AND transaction_id IS NULL THEN 'opening_balance'
+        WHEN role = 'adjustment' THEN
+          CASE WHEN note LIKE '%increase%' OR note LIKE '%add%' THEN 'adjustment_increase' ELSE 'adjustment_decrease' END
+        ELSE role
+      END,
+      note,
+      CAST(occurred_at AS INTEGER),
+      CAST(created_at AS INTEGER),
+      CAST(updated_at AS INTEGER),
+      CASE WHEN deleted_at IS NOT NULL THEN CAST(deleted_at AS INTEGER) ELSE NULL END
+    FROM debt_transactions;
+  `);
+
+  for (const debt of processedDebts) {
+    await db.runAsync(
+      `INSERT INTO _backup_debts (
         id, counterparty_id, direction, original_principal, currency, opening_mode,
         opened_at, due_date, status, note, created_at, updated_at, archived_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      debt.id,
+      debt.counterparty_id,
+      debt.direction,
+      debt.original_principal,
+      debt.currency,
+      debt.opening_mode,
+      Math.floor(Number(debt.opened_at)),
+      debt.due_date,
+      debt.status,
+      debt.note,
+      Math.floor(Number(debt.created_at)),
+      Math.floor(Number(debt.updated_at)),
+      debt.archived_at !== null ? Math.floor(debt.archived_at) : null,
+      debt.deleted_at ? Math.floor(Number(debt.deleted_at)) : null
+    );
+  }
+
+  // Step 4: Drop old tables in reverse foreign key order
+  // When debt_transactions is dropped, nothing references debts.
+  // When debts is dropped, nothing references counterparties.
+  // This is 100% safe with PRAGMA foreign_keys = ON!
+  await db.execAsync(`
+    DROP TABLE debt_transactions;
+    DROP TABLE debts;
+    DROP TABLE counterparties;
+  `);
+
+  // Step 5: Rebuild counterparties table with strict integer timestamp constraints
+  await db.execAsync(`
+    CREATE TABLE counterparties (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('person', 'business', 'organisation', 'other')),
+      phone TEXT,
+      email TEXT,
+      note TEXT,
+      avatar_color TEXT,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer'),
+      updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer')
+    );
+
+    INSERT INTO counterparties (
+      id, name, type, phone, email, note, avatar_color, is_archived, created_at, updated_at
+    )
+    SELECT
+      id, name, type, phone, email, note, avatar_color, is_archived, created_at, updated_at
+    FROM _backup_counterparties;
+
+    DROP TABLE _backup_counterparties;
+  `);
+
+  // Step 6: Rebuild debts table with target schema and constraints
+  await db.execAsync(`
+    CREATE TABLE debts (
+      id TEXT PRIMARY KEY NOT NULL,
+      counterparty_id TEXT NOT NULL REFERENCES counterparties(id) ON DELETE RESTRICT,
+      direction TEXT NOT NULL CHECK (direction IN ('borrowed', 'lent')),
+      original_principal INTEGER NOT NULL CHECK (typeof(original_principal) = 'integer' AND original_principal > 0),
+      currency TEXT NOT NULL DEFAULT 'BDT',
+      opening_mode TEXT NOT NULL CHECK (opening_mode IN ('new_with_cash', 'existing_balance')),
+      opened_at INTEGER NOT NULL CHECK (typeof(opened_at) = 'integer'),
+      due_date TEXT CHECK (due_date IS NULL OR (length(due_date) = 10 AND due_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')),
+      status TEXT NOT NULL CHECK (status IN ('active', 'settled')),
+      note TEXT,
+      created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer'),
+      updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer'),
+      archived_at INTEGER CHECK (archived_at IS NULL OR typeof(archived_at) = 'integer'),
+      deleted_at INTEGER CHECK (deleted_at IS NULL OR typeof(deleted_at) = 'integer')
+    );
+
+    INSERT INTO debts (
+      id, counterparty_id, direction, original_principal, currency, opening_mode,
+      opened_at, due_date, status, note, created_at, updated_at, archived_at, deleted_at
+    )
+    SELECT
+      id, counterparty_id, direction, original_principal, currency, opening_mode,
+      opened_at, due_date, status, note, created_at, updated_at, archived_at, deleted_at
+    FROM _backup_debts;
+
+    DROP TABLE _backup_debts;
+  `);
+
+  // Step 7: Rebuild debt_transactions table with target schema, link constraints, and opening_balance
+  await db.execAsync(`
+    CREATE TABLE debt_transactions (
+      id TEXT PRIMARY KEY NOT NULL,
+      debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE RESTRICT,
+      transaction_id TEXT REFERENCES transactions(id) ON DELETE RESTRICT,
+      amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer' AND amount > 0),
+      role TEXT NOT NULL CHECK (role IN ('disbursement', 'repayment', 'adjustment_increase', 'adjustment_decrease', 'opening_balance')),
+      note TEXT,
+      occurred_at INTEGER NOT NULL CHECK (typeof(occurred_at) = 'integer'),
+      created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer'),
+      updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer'),
+      deleted_at INTEGER CHECK (deleted_at IS NULL OR typeof(deleted_at) = 'integer'),
+      CONSTRAINT chk_debt_tx_link_role CHECK (
+        (role IN ('disbursement', 'repayment') AND transaction_id IS NOT NULL)
+        OR
+        (role IN ('adjustment_increase', 'adjustment_decrease', 'opening_balance') AND transaction_id IS NULL)
       )
-      SELECT
-        id,
-        counterparty_id,
-        direction,
-        CAST(original_principal AS INTEGER),
-        currency,
-        opening_mode,
-        CAST(opened_at AS INTEGER),
-        CASE
-          WHEN due_date IS NULL THEN NULL
-          WHEN typeof(due_date) = 'text' AND due_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' THEN due_date
-          WHEN typeof(due_date) = 'integer' AND due_date > 100000000000 THEN strftime('%Y-%m-%d', due_date / 1000, 'unixepoch')
-          WHEN typeof(due_date) = 'integer' AND due_date > 0 THEN strftime('%Y-%m-%d', due_date, 'unixepoch')
-          ELSE NULL
-        END,
-        CASE
-          WHEN status = 'archived' THEN 'active'
-          WHEN status IN ('active', 'settled') THEN status
-          ELSE 'active'
-        END,
-        note,
-        CAST(created_at AS INTEGER),
-        CAST(updated_at AS INTEGER),
-        ${archivedAtExpression},
-        CASE WHEN deleted_at IS NOT NULL THEN CAST(deleted_at AS INTEGER) ELSE NULL END
-      FROM debts;
-
-      DROP TABLE debts;
-      ALTER TABLE debts_new RENAME TO debts;
-
-      CREATE INDEX IF NOT EXISTS idx_debts_counterparty_id ON debts(counterparty_id);
-      CREATE INDEX IF NOT EXISTS idx_debts_direction ON debts(direction);
-      CREATE INDEX IF NOT EXISTS idx_debts_status ON debts(status);
-      CREATE INDEX IF NOT EXISTS idx_debts_due_date ON debts(due_date);
-      CREATE INDEX IF NOT EXISTS idx_debts_archived_at ON debts(archived_at);
-      CREATE INDEX IF NOT EXISTS idx_debts_deleted_at ON debts(deleted_at);
-    `);
-
-    // Step 4: Rebuild debt_transactions table
-    // Link-role semantics check constraint:
-    // (role IN ('disbursement', 'repayment') AND transaction_id IS NOT NULL) OR
-    // (role IN ('adjustment_increase', 'adjustment_decrease') AND transaction_id IS NULL)
-    // Converts old 'adjustment' roles safely based on note or defaults to 'adjustment_decrease'
-    // Excludes synthetic non-cash placeholder disbursements where transaction_id IS NULL
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS debt_transactions_new (
-        id TEXT PRIMARY KEY NOT NULL,
-        debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE RESTRICT,
-        transaction_id TEXT REFERENCES transactions(id) ON DELETE RESTRICT,
-        amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer' AND amount > 0),
-        role TEXT NOT NULL CHECK (role IN ('disbursement', 'repayment', 'adjustment_increase', 'adjustment_decrease')),
-        note TEXT,
-        occurred_at INTEGER NOT NULL CHECK (typeof(occurred_at) = 'integer'),
-        created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer'),
-        updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer'),
-        deleted_at INTEGER CHECK (deleted_at IS NULL OR typeof(deleted_at) = 'integer'),
-        CONSTRAINT chk_debt_tx_link_role CHECK (
-          (role IN ('disbursement', 'repayment') AND transaction_id IS NOT NULL)
-          OR
-          (role IN ('adjustment_increase', 'adjustment_decrease') AND transaction_id IS NULL)
-        )
-      );
-
-      INSERT INTO debt_transactions_new (
-        id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
-      )
-      SELECT
-        id,
-        debt_id,
-        transaction_id,
-        CAST(amount AS INTEGER),
-        CASE
-          WHEN role = 'adjustment' THEN
-            CASE WHEN note LIKE '%increase%' OR note LIKE '%add%' THEN 'adjustment_increase' ELSE 'adjustment_decrease' END
-          ELSE role
-        END,
-        note,
-        CAST(occurred_at AS INTEGER),
-        CAST(created_at AS INTEGER),
-        CAST(updated_at AS INTEGER),
-        CASE WHEN deleted_at IS NOT NULL THEN CAST(deleted_at AS INTEGER) ELSE NULL END
-      FROM debt_transactions
-      WHERE NOT (role = 'disbursement' AND transaction_id IS NULL);
-
-      DROP TABLE debt_transactions;
-      ALTER TABLE debt_transactions_new RENAME TO debt_transactions;
-
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_debt_tx_transaction_id ON debt_transactions(transaction_id) WHERE transaction_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_debt_tx_debt_id ON debt_transactions(debt_id);
-      CREATE INDEX IF NOT EXISTS idx_debt_tx_transaction_id ON debt_transactions(transaction_id);
-      CREATE INDEX IF NOT EXISTS idx_debt_tx_role ON debt_transactions(role);
-      CREATE INDEX IF NOT EXISTS idx_debt_tx_deleted_at ON debt_transactions(deleted_at);
-    `);
-
-    // Step 5: Post-migration row count validation
-    const debtsCountAfter = await db.getFirstAsync<{ count: number }>(
-      'SELECT COUNT(*) AS count FROM debts;'
-    );
-    const repaymentsCountAfter = await db.getFirstAsync<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM debt_transactions WHERE role = 'repayment';"
-    );
-    const realDisbursementsAfter = await db.getFirstAsync<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM debt_transactions WHERE role = 'disbursement' AND transaction_id IS NOT NULL;"
     );
 
-    if ((debtsCountBefore?.count ?? 0) !== (debtsCountAfter?.count ?? 0)) {
-      throw new Error(
-        `Migration 004 row count mismatch for debts: before=${debtsCountBefore?.count}, after=${debtsCountAfter?.count}`
-      );
-    }
-    if ((repaymentsCountBefore?.count ?? 0) !== (repaymentsCountAfter?.count ?? 0)) {
-      throw new Error(
-        `Migration 004 row count mismatch for repayments: before=${repaymentsCountBefore?.count}, after=${repaymentsCountAfter?.count}`
-      );
-    }
-    if ((realDisbursementsBefore?.count ?? 0) !== (realDisbursementsAfter?.count ?? 0)) {
-      throw new Error(
-        `Migration 004 row count mismatch for disbursements: before=${realDisbursementsBefore?.count}, after=${realDisbursementsAfter?.count}`
-      );
-    }
+    INSERT INTO debt_transactions (
+      id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
+    )
+    SELECT
+      id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
+    FROM _backup_debt_tx;
 
-    // Step 6: PRAGMA foreign_key_check
-    await db.execAsync('PRAGMA foreign_keys = ON;');
-    const fkViolations = await db.getAllAsync<{
-      table: string;
-      rowid: number;
-      parent: string;
-      fkid: number;
-    }>('PRAGMA foreign_key_check;');
+    DROP TABLE _backup_debt_tx;
+  `);
 
-    if (fkViolations.length > 0) {
-      throw new Error(
-        `Migration 004 foreign key check failed: ${fkViolations.length} violation(s) detected (${JSON.stringify(
-          fkViolations
-        )})`
-      );
-    }
-  } catch (error) {
-    // Ensure foreign_keys is restored even on error
-    await db.execAsync('PRAGMA foreign_keys = ON;').catch(() => {});
-    throw error;
+  // Step 8: Recreate all indexes
+  await db.execAsync(`
+    CREATE INDEX IF NOT EXISTS idx_counterparties_name ON counterparties(name);
+    CREATE INDEX IF NOT EXISTS idx_counterparties_archived ON counterparties(is_archived);
+
+    CREATE INDEX IF NOT EXISTS idx_debts_counterparty_id ON debts(counterparty_id);
+    CREATE INDEX IF NOT EXISTS idx_debts_direction ON debts(direction);
+    CREATE INDEX IF NOT EXISTS idx_debts_status ON debts(status);
+    CREATE INDEX IF NOT EXISTS idx_debts_due_date ON debts(due_date);
+    CREATE INDEX IF NOT EXISTS idx_debts_archived_at ON debts(archived_at);
+    CREATE INDEX IF NOT EXISTS idx_debts_deleted_at ON debts(deleted_at);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_debt_tx_transaction_id ON debt_transactions(transaction_id) WHERE transaction_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_debt_tx_debt_id ON debt_transactions(debt_id);
+    CREATE INDEX IF NOT EXISTS idx_debt_tx_transaction_id ON debt_transactions(transaction_id);
+    CREATE INDEX IF NOT EXISTS idx_debt_tx_role ON debt_transactions(role);
+    CREATE INDEX IF NOT EXISTS idx_debt_tx_deleted_at ON debt_transactions(deleted_at);
+  `);
+
+  // Verification: Post-migration row count validation (100% row preservation)
+  const debtsCountAfter = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM debts;'
+  );
+  const debtTxCountAfter = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM debt_transactions;'
+  );
+
+  if ((debtsCountBefore?.count ?? 0) !== (debtsCountAfter?.count ?? 0)) {
+    throw new Error(
+      `Migration 004 row count mismatch for debts: before=${debtsCountBefore?.count}, after=${debtsCountAfter?.count}`
+    );
+  }
+  if ((debtTxCountBefore?.count ?? 0) !== (debtTxCountAfter?.count ?? 0)) {
+    throw new Error(
+      `Migration 004 row count mismatch for debt_transactions: before=${debtTxCountBefore?.count}, after=${debtTxCountAfter?.count}`
+    );
+  }
+
+  // Verification: PRAGMA foreign_key_check
+  const fkViolations = await db.getAllAsync<{
+    table: string;
+    rowid: number;
+    parent: string;
+    fkid: number;
+  }>('PRAGMA foreign_key_check;');
+
+  if (fkViolations.length > 0) {
+    throw new Error(
+      `Migration 004 foreign key check failed: ${fkViolations.length} violation(s) detected (${JSON.stringify(
+        fkViolations
+      )})`
+    );
   }
 }
 

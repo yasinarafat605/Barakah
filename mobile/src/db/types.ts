@@ -264,7 +264,8 @@ export type DebtTransactionRole =
   | 'disbursement'
   | 'repayment'
   | 'adjustment_increase'
-  | 'adjustment_decrease';
+  | 'adjustment_decrease'
+  | 'opening_balance';
 
 export interface DebtTransactionRow {
   id: string;

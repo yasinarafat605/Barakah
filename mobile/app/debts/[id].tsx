@@ -385,7 +385,13 @@ export default function DebtDetailScreen() {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.timelineRole, { color: theme.text }]}>
-                        {isRepay ? t('debts.addRepayment') : item.role}
+                        {item.role === 'repayment'
+                          ? t('debts.repayment')
+                          : item.role === 'disbursement'
+                          ? t('debts.disbursement')
+                          : item.role === 'opening_balance'
+                          ? t('debts.openingBalance')
+                          : item.role}
                       </Text>
                       <Text style={[styles.timelineMeta, { color: theme.textMuted }]}>
                         {item.occurred_at ? new Date(item.occurred_at).toLocaleDateString(currentLocale === 'bn' ? 'bn-BD' : 'en-US') : ''}

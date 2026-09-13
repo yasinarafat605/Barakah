@@ -229,6 +229,9 @@
     "repaymentSuccess": "Repayment recorded successfully",
     "repaymentDeleted": "Repayment deleted",
     "repaymentRestored": "Repayment restored successfully",
+    "repayment": "Repayment",
+    "disbursement": "Disbursement",
+    "openingBalance": "Opening Balance",
     "errors": {
       "counterpartyRequired": "Please select a counterparty",
       "amountRequired": "Please enter an amount",
