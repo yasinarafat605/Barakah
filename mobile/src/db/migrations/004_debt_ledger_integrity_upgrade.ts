@@ -1,35 +1,117 @@
 import { Migration, DatabaseConnection } from '../types';
 
 /**
+ * Strict calendar date validation that round-trips year, month, and day without JavaScript rollover.
+ * Validates real calendar dates in YYYY-MM-DD format (including leap years, range 1000-9999).
+ */
+export function isValidCivilDate(dateStr: unknown): dateStr is string {
+  if (typeof dateStr !== 'string') return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+
+  const [yearStr, monthStr, dayStr] = dateStr.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const day = parseInt(dayStr, 10);
+
+  if (year < 1000 || year > 9999) return false;
+  if (month < 1 || month > 12) return false;
+
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+  const daysInMonth = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  if (day < 1 || day > daysInMonth[month - 1]) return false;
+
+  // Round trip check using UTC date components to eliminate JS date rollover
+  const utcDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utcDate.getUTCFullYear() !== year ||
+    utcDate.getUTCMonth() !== month - 1 ||
+    utcDate.getUTCDate() !== day
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function convertNumericTimestamp(num: number, originalInput: unknown): string {
+  if (!Number.isFinite(num) || !Number.isSafeInteger(num) || num <= 0) {
+    throw new Error(
+      `Migration 004 invalid numeric due_date timestamp: ${String(originalInput)}. Must be a positive safe integer.`
+    );
+  }
+
+  // If epoch seconds (< 100000000000), convert to ms
+  const ms = num < 100000000000 ? num * 1000 : num;
+
+  if (!Number.isSafeInteger(ms) || ms > 253402300799000) {
+    throw new Error(
+      `Migration 004 due_date timestamp exceeds supported date range: ${String(originalInput)}`
+    );
+  }
+
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) {
+    throw new Error(
+      `Migration 004 due_date timestamp produced invalid Date: ${String(originalInput)}`
+    );
+  }
+
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const civilDate = `${year}-${month}-${day}`;
+
+  if (!isValidCivilDate(civilDate)) {
+    throw new Error(
+      `Migration 004 converted due_date timestamp ${String(originalInput)} produced invalid civil date: "${civilDate}"`
+    );
+  }
+
+  return civilDate;
+}
+
+/**
  * Converts legacy integer or text due_date to a civil date string (YYYY-MM-DD).
  * Uses local calendar components (getFullYear, getMonth, getDate) to preserve
  * the exact civil date the user entered on their device, preventing timezone shifts.
+ *
+ * Strict validation:
+ * - null or undefined returns null.
+ * - Valid YYYY-MM-DD string is validated with isValidCivilDate() and returned.
+ * - Valid numeric timestamp (finite, safe integer, positive, within range) is converted to YYYY-MM-DD and validated.
+ * - Corrupted non-null data is NEVER silently converted to null; it throws an Error,
+ *   triggering complete migration rollback.
  */
 export function convertLegacyDueDateToCivilDate(dueDate: unknown): string | null {
-  if (dueDate === null || dueDate === undefined) return null;
+  if (dueDate === null || dueDate === undefined) {
+    return null;
+  }
+
   if (typeof dueDate === 'string') {
     const trimmed = dueDate.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    if (isValidCivilDate(trimmed)) {
       return trimmed;
     }
-    const parsed = Number(trimmed);
-    if (!isNaN(parsed) && Number.isFinite(parsed)) {
-      dueDate = parsed;
-    } else {
-      return null;
+
+    // Check if it's a numeric string representing an epoch timestamp
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      return convertNumericTimestamp(parsed, dueDate);
     }
+
+    throw new Error(
+      `Migration 004 invalid due_date string: "${dueDate}". Must be a valid YYYY-MM-DD civil date or positive integer timestamp.`
+    );
   }
-  if (typeof dueDate === 'number' && Number.isFinite(dueDate) && dueDate > 0) {
-    // If epoch seconds (< 100000000000), convert to ms
-    const ms = dueDate < 100000000000 ? dueDate * 1000 : dueDate;
-    const d = new Date(ms);
-    if (isNaN(d.getTime())) return null;
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+
+  if (typeof dueDate === 'number') {
+    return convertNumericTimestamp(dueDate, dueDate);
   }
-  return null;
+
+  throw new Error(
+    `Migration 004 invalid due_date value of type ${typeof dueDate}: ${String(dueDate)}`
+  );
 }
 
 async function applyMigration004(db: DatabaseConnection): Promise<void> {
@@ -102,7 +184,19 @@ async function applyMigration004(db: DatabaseConnection): Promise<void> {
 
   const processedDebts = legacyDebts.map((d) => {
     const originalPrincipal = Number(d.original_principal);
+    if (!Number.isSafeInteger(originalPrincipal) || originalPrincipal <= 0) {
+      throw new Error(
+        `Migration 004 integrity check failed: Debt ${d.id} has invalid original_principal (${d.original_principal}). Rolling back migration.`
+      );
+    }
+
     const totalRepaid = Number(d.total_repaid);
+    if (!Number.isSafeInteger(totalRepaid)) {
+      throw new Error(
+        `Migration 004 integrity check failed: Debt ${d.id} has invalid total_repaid (${totalRepaid}). Rolling back migration.`
+      );
+    }
+
     const outstanding = originalPrincipal - totalRepaid;
 
     if (outstanding < 0) {
@@ -111,17 +205,31 @@ async function applyMigration004(db: DatabaseConnection): Promise<void> {
       );
     }
 
-    let targetStatus: 'active' | 'settled';
-    if (outstanding === 0) {
-      targetStatus = 'settled';
-    } else {
-      targetStatus = 'active';
-    }
+    // Recalculate lifecycle status for EVERY migrated debt from derived outstanding balance:
+    // derived outstanding > 0 → active
+    // derived outstanding = 0 → settled
+    // derived outstanding < 0 → migration failure (handled above)
+    const targetStatus: 'active' | 'settled' = outstanding === 0 ? 'settled' : 'active';
 
-    // Preserve archived state without unarchiving
+    // Preserve archival state independently:
+    // legacy archived → archived_at remains populated
+    // legacy not archived → archived_at remains null
     let targetArchivedAt: number | null = null;
-    if (d.status === 'archived' || (d.archived_at !== null && d.archived_at !== undefined)) {
-      targetArchivedAt = Number(d.archived_at ?? d.updated_at ?? d.created_at ?? Date.now());
+    const isLegacyArchived =
+      d.status === 'archived' ||
+      (d.archived_at !== null && d.archived_at !== undefined && d.archived_at !== 0);
+
+    if (isLegacyArchived) {
+      const candidate = d.archived_at ?? d.updated_at ?? d.created_at ?? Date.now();
+      const numCandidate = Number(candidate);
+      if (!Number.isSafeInteger(numCandidate) || numCandidate <= 0) {
+        throw new Error(
+          `Migration 004 integrity check failed: Debt ${d.id} has invalid archived_at timestamp (${candidate}). Rolling back migration.`
+        );
+      }
+      targetArchivedAt = numCandidate;
+    } else {
+      targetArchivedAt = null;
     }
 
     const civilDueDate = convertLegacyDueDateToCivilDate(d.due_date);

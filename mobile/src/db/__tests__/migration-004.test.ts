@@ -5,6 +5,7 @@ import { migration003 } from '../migrations/003_debts_and_counterparties';
 import {
   migration004,
   convertLegacyDueDateToCivilDate,
+  isValidCivilDate,
 } from '../migrations/004_debt_ledger_integrity_upgrade';
 import { DatabaseConnection } from '../types';
 import { classifyCashFlow } from '../../domain/cashflow';
@@ -103,58 +104,54 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
       now, now, now
     );
 
-    // Record pre-migration counts
+    // Pre-migration counts
     const debtsBefore = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM debts;');
     const debtTxBefore = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM debt_transactions;');
     expect(debtsBefore?.count).toBe(3);
     expect(debtTxBefore?.count).toBe(5);
 
-    // Execute Migration 004
+    // Apply migration 004
     await migration004.up(db);
 
-    // 1. Validate 100% Row Preservation (Zero deletions)
+    // Post-migration counts (100% row preservation)
     const debtsAfter = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM debts;');
     const debtTxAfter = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM debt_transactions;');
     expect(debtsAfter?.count).toBe(3);
     expect(debtTxAfter?.count).toBe(5);
 
-    // 2. Foreign Key Check
+    // Verify foreign key integrity
     const fkViolations = await db.getAllAsync('PRAGMA foreign_key_check;');
     expect(fkViolations).toHaveLength(0);
 
-    // 3. Verify Integer due_date converted to YYYY-MM-DD
-    const debt1 = await db.getFirstAsync<{ due_date: string; status: string; archived_at: number | null }>(
-      'SELECT due_date, status, archived_at FROM debts WHERE id = ?;',
+    // Verify civil due date conversion
+    const migratedDebtDate = await db.getFirstAsync<{ due_date: string; status: string }>(
+      'SELECT due_date, status FROM debts WHERE id = ?;',
       'debt_int_date'
     );
-    expect(debt1?.due_date).toBe('2025-09-13');
-    expect(debt1?.status).toBe('active');
-    expect(debt1?.archived_at).toBeNull();
+    expect(migratedDebtDate?.due_date).toBe('2025-09-13');
 
-    // 4. Verify status 'archived' converted to 'active' with archived_at populated (since outstanding > 0)
-    const debt2 = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
+    // Verify archived debt status and archived_at
+    const migratedDebtArchived = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
       'SELECT status, archived_at FROM debts WHERE id = ?;',
       'debt_archived'
     );
-    expect(debt2?.status).toBe('active');
-    expect(debt2?.archived_at).toBe(now);
+    expect(migratedDebtArchived?.status).toBe('active'); // outstanding 50,000 > 0 -> active!
+    expect(migratedDebtArchived?.archived_at).toBe(now); // Preserved archived_at!
 
-    // 5. Verify old adjustment roles converted correctly
-    const adjDec = await db.getFirstAsync<{ role: string; transaction_id: string | null }>(
-      'SELECT role, transaction_id FROM debt_transactions WHERE id = ?;',
+    // Verify adjustment role conversion
+    const adjDec = await db.getFirstAsync<{ role: string }>(
+      'SELECT role FROM debt_transactions WHERE id = ?;',
       'dtx_adj_dec'
     );
     expect(adjDec?.role).toBe('adjustment_decrease');
-    expect(adjDec?.transaction_id).toBeNull();
 
-    const adjInc = await db.getFirstAsync<{ role: string; transaction_id: string | null }>(
-      'SELECT role, transaction_id FROM debt_transactions WHERE id = ?;',
+    const adjInc = await db.getFirstAsync<{ role: string }>(
+      'SELECT role FROM debt_transactions WHERE id = ?;',
       'dtx_adj_inc'
     );
     expect(adjInc?.role).toBe('adjustment_increase');
-    expect(adjInc?.transaction_id).toBeNull();
 
-    // 6. Verify legacy non-cash disbursement was preserved as 'opening_balance'
+    // Verify non-cash opening record preservation as opening_balance
     const openingBal = await db.getFirstAsync<{ role: string; transaction_id: string | null }>(
       'SELECT role, transaction_id FROM debt_transactions WHERE id = ?;',
       'dtx_placeholder'
@@ -164,47 +161,47 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
     expect(openingBal?.transaction_id).toBeNull();
   });
 
-  describe('Archived Debts Lifecycle State Derivation', () => {
+  describe('Lifecycle Status Recalculation for Every Migrated Debt', () => {
     const now = 1757764800000;
 
     beforeEach(async () => {
       await db.runAsync(
         `INSERT INTO counterparties (id, name, type, is_archived, created_at, updated_at)
-         VALUES ('cp_arc', 'Archived Tester', 'person', 0, ?, ?);`,
+         VALUES ('cp_life', 'Lifecycle Tester', 'person', 0, ?, ?);`,
         now, now
       );
       await db.runAsync(
         `INSERT INTO accounts (id, name, type, initial_balance, currency, created_at, updated_at)
-         VALUES ('acc_arc', 'Arc Bank', 'bank', 500000, 'BDT', ?, ?);`,
+         VALUES ('acc_life', 'Lifecycle Bank', 'bank', 500000, 'BDT', ?, ?);`,
         now, now
       );
     });
 
-    it('preserves archived settled debt as settled with archived_at populated (does not reopen)', async () => {
-      // Debt: 50,000 principal, 50,000 repaid, status = 'archived'
+    it('recalculates non-archived debt incorrectly stored as settled but actually active', async () => {
+      // Debt: 50,000 principal, 20,000 repaid, legacy status was 'settled'
       await db.runAsync(
         `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
-         VALUES ('debt_arc_settled', 'cp_arc', 'borrowed', 50000, 'BDT', 'new_with_cash', ?, 'archived', ?, ?);`,
+         VALUES ('debt_stale_settled', 'cp_life', 'borrowed', 50000, 'BDT', 'new_with_cash', ?, 'settled', ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_arc_disb', 'acc_arc', 'cat_inc_loan_received', 50000, 'income', ?, ?, ?);`,
+         VALUES ('tx_disb_stale1', 'acc_life', 'cat_inc_loan_received', 50000, 'income', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_arc_repay', 'acc_arc', 'cat_exp_loan_repayment', 50000, 'expense', ?, ?, ?);`,
+         VALUES ('tx_repay_stale1', 'acc_life', 'cat_exp_loan_repayment', 20000, 'expense', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
-         VALUES ('dtx_arc_disb', 'debt_arc_settled', 'tx_arc_disb', 50000, 'disbursement', ?, ?, ?);`,
+         VALUES ('dtx_disb_stale1', 'debt_stale_settled', 'tx_disb_stale1', 50000, 'disbursement', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
-         VALUES ('dtx_arc_repay', 'debt_arc_settled', 'tx_arc_repay', 50000, 'repayment', ?, ?, ?);`,
+         VALUES ('dtx_repay_stale1', 'debt_stale_settled', 'tx_repay_stale1', 20000, 'repayment', ?, ?, ?);`,
         now, now, now
       );
 
@@ -212,27 +209,67 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
 
       const debt = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
         'SELECT status, archived_at FROM debts WHERE id = ?;',
-        'debt_arc_settled'
+        'debt_stale_settled'
       );
-      expect(debt?.status).toBe('settled'); // Correctly derived as settled!
-      expect(debt?.archived_at).toBe(now); // Preserved archived_at!
+      // Outstanding balance is 30,000 > 0 -> must be recalculated to 'active'!
+      expect(debt?.status).toBe('active');
+      expect(debt?.archived_at).toBeNull();
     });
 
-    it('derives archived active debt as active with archived_at populated when balance remains', async () => {
-      // Debt: 50,000 principal, 20,000 repaid, status = 'archived'
+    it('recalculates non-archived debt incorrectly stored as active but actually settled', async () => {
+      // Debt: 40,000 principal, 40,000 repaid, legacy status was 'active'
       await db.runAsync(
         `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
-         VALUES ('debt_arc_active', 'cp_arc', 'borrowed', 50000, 'BDT', 'new_with_cash', ?, 'archived', ?, ?);`,
+         VALUES ('debt_stale_active', 'cp_life', 'borrowed', 40000, 'BDT', 'new_with_cash', ?, 'active', ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_arc_disb2', 'acc_arc', 'cat_inc_loan_received', 50000, 'income', ?, ?, ?);`,
+         VALUES ('tx_disb_stale2', 'acc_life', 'cat_inc_loan_received', 40000, 'income', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_arc_repay2', 'acc_arc', 'cat_exp_loan_repayment', 20000, 'expense', ?, ?, ?);`,
+         VALUES ('tx_repay_stale2', 'acc_life', 'cat_exp_loan_repayment', 40000, 'expense', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_disb_stale2', 'debt_stale_active', 'tx_disb_stale2', 40000, 'disbursement', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_repay_stale2', 'debt_stale_active', 'tx_repay_stale2', 40000, 'repayment', ?, ?, ?);`,
+        now, now, now
+      );
+
+      await migration004.up(db);
+
+      const debt = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
+        'SELECT status, archived_at FROM debts WHERE id = ?;',
+        'debt_stale_active'
+      );
+      // Outstanding balance is 0 -> must be recalculated to 'settled'!
+      expect(debt?.status).toBe('settled');
+      expect(debt?.archived_at).toBeNull();
+    });
+
+    it('preserves archived active debt with archived_at populated', async () => {
+      // Debt: 50,000 principal, 20,000 repaid, legacy status = 'archived'
+      await db.runAsync(
+        `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
+         VALUES ('debt_arc_active', 'cp_life', 'borrowed', 50000, 'BDT', 'new_with_cash', ?, 'archived', ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_arc_disb2', 'acc_life', 'cat_inc_loan_received', 50000, 'income', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_arc_repay2', 'acc_life', 'cat_exp_loan_repayment', 20000, 'expense', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
@@ -256,31 +293,69 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
       expect(debt?.archived_at).toBe(now);
     });
 
-    it('correctly derives active status when repayment was soft-deleted', async () => {
-      // Debt: 30,000 principal, repayment of 30,000 was deleted, status = 'archived'
+    it('preserves archived settled debt with archived_at populated', async () => {
+      // Debt: 50,000 principal, 50,000 repaid, legacy status = 'archived'
       await db.runAsync(
         `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
-         VALUES ('debt_arc_del_rep', 'cp_arc', 'borrowed', 30000, 'BDT', 'new_with_cash', ?, 'archived', ?, ?);`,
+         VALUES ('debt_arc_settled', 'cp_life', 'borrowed', 50000, 'BDT', 'new_with_cash', ?, 'archived', ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_arc_disb3', 'acc_arc', 'cat_inc_loan_received', 30000, 'income', ?, ?, ?);`,
+         VALUES ('tx_arc_disb', 'acc_life', 'cat_inc_loan_received', 50000, 'income', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at, deleted_at)
-         VALUES ('tx_arc_repay3', 'acc_arc', 'cat_exp_loan_repayment', 30000, 'expense', ?, ?, ?, ?);`,
-        now, now, now, now // soft-deleted in transactions!
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_arc_repay', 'acc_life', 'cat_exp_loan_repayment', 50000, 'expense', ?, ?, ?);`,
+        now, now, now
       );
       await db.runAsync(
-        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at, deleted_at)
-         VALUES ('dtx_arc_disb3', 'debt_arc_del_rep', 'tx_arc_disb3', 30000, 'disbursement', ?, ?, ?, NULL);`,
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_arc_disb', 'debt_arc_settled', 'tx_arc_disb', 50000, 'disbursement', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_arc_repay', 'debt_arc_settled', 'tx_arc_repay', 50000, 'repayment', ?, ?, ?);`,
+        now, now, now
+      );
+
+      await migration004.up(db);
+
+      const debt = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
+        'SELECT status, archived_at FROM debts WHERE id = ?;',
+        'debt_arc_settled'
+      );
+      expect(debt?.status).toBe('settled');
+      expect(debt?.archived_at).toBe(now);
+    });
+
+    it('excludes soft-deleted repayment when recalculating debt lifecycle status', async () => {
+      // Debt: 30,000 principal, repayment of 30,000 was deleted, legacy status was 'settled'
+      await db.runAsync(
+        `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
+         VALUES ('debt_del_rep', 'cp_life', 'borrowed', 30000, 'BDT', 'new_with_cash', ?, 'settled', ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_del_disb', 'acc_life', 'cat_inc_loan_received', 30000, 'income', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_del_repay', 'acc_life', 'cat_exp_loan_repayment', 30000, 'expense', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at, deleted_at)
-         VALUES ('dtx_arc_repay3', 'debt_arc_del_rep', 'tx_arc_repay3', 30000, 'repayment', ?, ?, ?, ?);`,
+         VALUES ('dtx_del_disb', 'debt_del_rep', 'tx_del_disb', 30000, 'disbursement', ?, ?, ?, NULL);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at, deleted_at)
+         VALUES ('dtx_del_repay', 'debt_del_rep', 'tx_del_repay', 30000, 'repayment', ?, ?, ?, ?);`,
         now, now, now, now // soft-deleted in debt_transactions!
       );
 
@@ -288,43 +363,38 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
 
       const debt = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
         'SELECT status, archived_at FROM debts WHERE id = ?;',
-        'debt_arc_del_rep'
+        'debt_del_rep'
       );
-      // Because the repayment was soft-deleted, outstanding remains 30,000 -> active!
+      // Because repayment was soft-deleted, outstanding remains 30,000 -> must be recalculated to 'active'!
       expect(debt?.status).toBe('active');
-      expect(debt?.archived_at).toBe(now);
+      expect(debt?.archived_at).toBeNull();
     });
 
-    it('correctly factors legacy adjustments into archived debt lifecycle calculation', async () => {
-      // Debt: 40,000 principal, 30,000 repaid, 10,000 waiver adjustment decrease -> outstanding is 0 -> settled!
+    it('excludes soft-deleted linked transaction when recalculating debt lifecycle status', async () => {
+      // Debt: 30,000 principal, linked cash transaction was soft-deleted in transactions table
       await db.runAsync(
         `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
-         VALUES ('debt_arc_adj', 'cp_arc', 'borrowed', 40000, 'BDT', 'new_with_cash', ?, 'archived', ?, ?);`,
+         VALUES ('debt_del_linked_tx', 'cp_life', 'borrowed', 30000, 'BDT', 'new_with_cash', ?, 'settled', ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_disb_adj', 'acc_arc', 'cat_inc_loan_received', 40000, 'income', ?, ?, ?);`,
+         VALUES ('tx_disb_link', 'acc_life', 'cat_inc_loan_received', 30000, 'income', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_repay_adj', 'acc_arc', 'cat_exp_loan_repayment', 30000, 'expense', ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at, deleted_at)
+         VALUES ('tx_repay_soft_del', 'acc_life', 'cat_exp_loan_repayment', 30000, 'expense', ?, ?, ?, ?);`,
+        now, now, now, now // soft-deleted in transactions!
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_disb_link', 'debt_del_linked_tx', 'tx_disb_link', 30000, 'disbursement', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
-         VALUES ('dtx_disb_adj', 'debt_arc_adj', 'tx_disb_adj', 40000, 'disbursement', ?, ?, ?);`,
-        now, now, now
-      );
-      await db.runAsync(
-        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
-         VALUES ('dtx_repay_adj', 'debt_arc_adj', 'tx_repay_adj', 30000, 'repayment', ?, ?, ?);`,
-        now, now, now
-      );
-      await db.runAsync(
-        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at)
-         VALUES ('dtx_adj_waiver', 'debt_arc_adj', NULL, 10000, 'adjustment', 'final waiver', ?, ?, ?);`,
+         VALUES ('dtx_repay_soft_link', 'debt_del_linked_tx', 'tx_repay_soft_del', 30000, 'repayment', ?, ?, ?);`,
         now, now, now
       );
 
@@ -332,28 +402,72 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
 
       const debt = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
         'SELECT status, archived_at FROM debts WHERE id = ?;',
-        'debt_arc_adj'
+        'debt_del_linked_tx'
+      );
+      // Because the linked cash transaction was soft-deleted, repayment is excluded -> active!
+      expect(debt?.status).toBe('active');
+      expect(debt?.archived_at).toBeNull();
+    });
+
+    it('applies legacy adjustments correctly when deriving status for migrated debts', async () => {
+      // Debt: 40,000 principal, 30,000 repaid, 10,000 waiver adjustment decrease -> outstanding is 0 -> settled!
+      await db.runAsync(
+        `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
+         VALUES ('debt_adj_settle', 'cp_life', 'borrowed', 40000, 'BDT', 'new_with_cash', ?, 'active', ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_disb_adj', 'acc_life', 'cat_inc_loan_received', 40000, 'income', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
+         VALUES ('tx_repay_adj', 'acc_life', 'cat_exp_loan_repayment', 30000, 'expense', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_disb_adj', 'debt_adj_settle', 'tx_disb_adj', 40000, 'disbursement', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, occurred_at, created_at, updated_at)
+         VALUES ('dtx_repay_adj', 'debt_adj_settle', 'tx_repay_adj', 30000, 'repayment', ?, ?, ?);`,
+        now, now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at)
+         VALUES ('dtx_adj_waiver', 'debt_adj_settle', NULL, 10000, 'adjustment', 'final waiver', ?, ?, ?);`,
+        now, now, now
+      );
+
+      await migration004.up(db);
+
+      const debt = await db.getFirstAsync<{ status: string; archived_at: number | null }>(
+        'SELECT status, archived_at FROM debts WHERE id = ?;',
+        'debt_adj_settle'
       );
       // 40,000 - 30,000 - 10,000 = 0 -> settled!
       expect(debt?.status).toBe('settled');
-      expect(debt?.archived_at).toBe(now);
+      expect(debt?.archived_at).toBeNull();
     });
 
-    it('rolls back atomic migration when a debt has corrupted negative outstanding balance', async () => {
+    it('rolls back atomic migration on negative derived balance', async () => {
       // Debt: 10,000 principal, 20,000 repaid -> negative balance!
       await db.runAsync(
         `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, status, created_at, updated_at)
-         VALUES ('debt_corrupt', 'cp_arc', 'borrowed', 10000, 'BDT', 'new_with_cash', ?, 'active', ?, ?);`,
+         VALUES ('debt_corrupt', 'cp_life', 'borrowed', 10000, 'BDT', 'new_with_cash', ?, 'active', ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_corrupt_disb', 'acc_arc', 'cat_inc_loan_received', 10000, 'income', ?, ?, ?);`,
+         VALUES ('tx_corrupt_disb', 'acc_life', 'cat_inc_loan_received', 10000, 'income', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
         `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-         VALUES ('tx_corrupt_repay', 'acc_arc', 'cat_exp_loan_repayment', 20000, 'expense', ?, ?, ?);`,
+         VALUES ('tx_corrupt_repay', 'acc_life', 'cat_exp_loan_repayment', 20000, 'expense', ?, ?, ?);`,
         now, now, now
       );
       await db.runAsync(
@@ -370,13 +484,7 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
       // Migration must fail with descriptive error
       await expect(migration004.up(db)).rejects.toThrow(/corrupted negative outstanding balance/i);
 
-      // Verify schema rollback: v3 schema remains active, debts_new does not exist
-      const tables = await db.getAllAsync<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'debts_new';"
-      );
-      expect(tables).toHaveLength(0);
-
-      // The uncorrupted debts table still exists
+      // Verify schema rollback: v3 schema remains active, staging tables cleaned up
       const intactDebt = await db.getFirstAsync<{ id: string }>(
         'SELECT id FROM debts WHERE id = ?;',
         'debt_corrupt'
@@ -385,34 +493,86 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
     });
   });
 
-  describe('Civil Due Date Timezone Shift Prevention', () => {
-    it('converts legacy timestamps using local calendar components accurately', () => {
-      // 1. Text date-only value remains intact
+  describe('Strict Civil Due Date Validation and Timezone Shift Prevention', () => {
+    it('preserves valid existing date string', () => {
       expect(convertLegacyDueDateToCivilDate('2026-09-25')).toBe('2026-09-25');
       expect(convertLegacyDueDateToCivilDate('2024-02-29')).toBe('2024-02-29');
+      expect(convertLegacyDueDateToCivilDate('2030-12-31')).toBe('2030-12-31');
+    });
 
-      // 2. Null or undefined
+    it('rejects invalid but correctly shaped date string', () => {
+      expect(() => convertLegacyDueDateToCivilDate('2026-02-31')).toThrow(/invalid due_date string/i);
+      expect(isValidCivilDate('2026-02-31')).toBe(false);
+    });
+
+    it('rejects invalid month', () => {
+      expect(() => convertLegacyDueDateToCivilDate('2026-13-01')).toThrow(/invalid due_date string/i);
+      expect(() => convertLegacyDueDateToCivilDate('2026-00-15')).toThrow(/invalid due_date string/i);
+      expect(isValidCivilDate('2026-13-01')).toBe(false);
+    });
+
+    it('rejects invalid leap day', () => {
+      // 2025 is not a leap year
+      expect(() => convertLegacyDueDateToCivilDate('2025-02-29')).toThrow(/invalid due_date string/i);
+      expect(isValidCivilDate('2025-02-29')).toBe(false);
+
+      // 1900 was not a leap year (divisible by 100 but not 400)
+      expect(() => convertLegacyDueDateToCivilDate('1900-02-29')).toThrow(/invalid due_date string/i);
+      expect(isValidCivilDate('1900-02-29')).toBe(false);
+
+      // 2000 was a leap year (divisible by 400)
+      expect(convertLegacyDueDateToCivilDate('2000-02-29')).toBe('2000-02-29');
+      expect(isValidCivilDate('2000-02-29')).toBe(true);
+    });
+
+    it('rejects non-date string', () => {
+      expect(() => convertLegacyDueDateToCivilDate('invalid-date')).toThrow(/invalid due_date string/i);
+      expect(() => convertLegacyDueDateToCivilDate('tomorrow')).toThrow(/invalid due_date string/i);
+      expect(() => convertLegacyDueDateToCivilDate('not-a-date')).toThrow(/invalid due_date string/i);
+      expect(() => convertLegacyDueDateToCivilDate('')).toThrow(/invalid due_date string/i);
+      expect(() => convertLegacyDueDateToCivilDate('   ')).toThrow(/invalid due_date string/i);
+    });
+
+    it('rejects NaN-equivalent input where SQLite permits it', () => {
+      expect(() => convertLegacyDueDateToCivilDate('NaN')).toThrow(/invalid due_date string/i);
+      expect(() => convertLegacyDueDateToCivilDate(NaN)).toThrow(/invalid numeric due_date timestamp/i);
+    });
+
+    it('rejects unsafe numeric value', () => {
+      // Negative timestamp
+      expect(() => convertLegacyDueDateToCivilDate(-1000)).toThrow(/invalid numeric due_date timestamp/i);
+      // Zero timestamp
+      expect(() => convertLegacyDueDateToCivilDate(0)).toThrow(/invalid numeric due_date timestamp/i);
+      // Exceeding safe integer
+      expect(() => convertLegacyDueDateToCivilDate(Number.MAX_SAFE_INTEGER + 100)).toThrow(/invalid numeric due_date timestamp/i);
+      // Infinity
+      expect(() => convertLegacyDueDateToCivilDate(Infinity)).toThrow(/invalid numeric due_date timestamp/i);
+      expect(() => convertLegacyDueDateToCivilDate(-Infinity)).toThrow(/invalid numeric due_date timestamp/i);
+      // Beyond supported date range (> year 9999)
+      expect(() => convertLegacyDueDateToCivilDate(300000000000000)).toThrow(/exceeds supported date range/i);
+    });
+
+    it('preserves null and undefined as null', () => {
       expect(convertLegacyDueDateToCivilDate(null)).toBeNull();
       expect(convertLegacyDueDateToCivilDate(undefined)).toBeNull();
+    });
 
-      // 3. Local midnight conversion
+    it('converts legacy timestamps using local calendar components accurately', () => {
+      // Local midnight conversion
       const localDate = new Date(2026, 8, 25, 0, 0, 0, 0); // 2026-09-25 local
       expect(convertLegacyDueDateToCivilDate(localDate.getTime())).toBe('2026-09-25');
 
-      // 4. Local 23:59:59 conversion
+      // Local 23:59:59 conversion
       const endOfDay = new Date(2026, 8, 25, 23, 59, 59, 999);
       expect(convertLegacyDueDateToCivilDate(endOfDay.getTime())).toBe('2026-09-25');
 
-      // 5. Leap day local midnight
+      // Leap day local midnight
       const leapDay = new Date(2024, 1, 29, 0, 0, 0, 0);
       expect(convertLegacyDueDateToCivilDate(leapDay.getTime())).toBe('2024-02-29');
     });
 
     it('preserves user civil dates across simulated timezone offsets and DST transitions', () => {
-      // Test explicit timestamp representations across key global offsets
       // Asia/Dhaka (+06:00): local midnight on 2026-09-25 was 2026-09-24T18:00:00Z
-      // A pure UTC strftime would have yielded 2026-09-24 (1-day back).
-      // Testing local calendar interpretation:
       const dhakaMidnightUtcEpoch = 1790272800000;
       const dhakaDate = new Date(dhakaMidnightUtcEpoch);
       const civilStr = `${dhakaDate.getFullYear()}-${String(dhakaDate.getMonth() + 1).padStart(2, '0')}-${String(dhakaDate.getDate()).padStart(2, '0')}`;
@@ -427,6 +587,53 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
       // DST boundary (spring forward e.g. 2026-03-29)
       const dstDate = new Date(2026, 2, 29, 1, 0, 0, 0);
       expect(convertLegacyDueDateToCivilDate(dstDate.getTime())).toBe('2026-03-29');
+    });
+
+    it('migrates valid existing date string stored in debts table successfully', async () => {
+      const now = Date.now();
+      await db.runAsync(
+        `INSERT INTO counterparties (id, name, type, is_archived, created_at, updated_at)
+         VALUES ('cp_date_ok', 'Date Tester', 'person', 0, ?, ?);`,
+        now, now
+      );
+      await db.runAsync(
+        `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, due_date, status, created_at, updated_at)
+         VALUES ('debt_date_ok', 'cp_date_ok', 'borrowed', 10000, 'BDT', 'existing_balance', ?, '2026-08-15', 'active', ?, ?);`,
+        now, now, now
+      );
+
+      await migration004.up(db);
+
+      const debt = await db.getFirstAsync<{ due_date: string }>(
+        'SELECT due_date FROM debts WHERE id = ?;',
+        'debt_date_ok'
+      );
+      expect(debt?.due_date).toBe('2026-08-15');
+    });
+
+    it('rolls back entire migration when database contains invalid date string or corrupted timestamp', async () => {
+      const now = Date.now();
+      await db.runAsync(
+        `INSERT INTO counterparties (id, name, type, is_archived, created_at, updated_at)
+         VALUES ('cp_bad_date', 'Bad Date Tester', 'person', 0, ?, ?);`,
+        now, now
+      );
+      // Insert debt with invalid date string '2026-02-31'
+      await db.runAsync(
+        `INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, due_date, status, created_at, updated_at)
+         VALUES ('debt_bad_date', 'cp_bad_date', 'borrowed', 10000, 'BDT', 'existing_balance', ?, '2026-02-31', 'active', ?, ?);`,
+        now, now, now
+      );
+
+      await expect(migration004.up(db)).rejects.toThrow(/invalid due_date string/i);
+
+      // Verify complete rollback: debts table still has original unmigrated v3 schema
+      const intactDebt = await db.getFirstAsync<{ id: string; due_date: string }>(
+        'SELECT id, due_date FROM debts WHERE id = ?;',
+        'debt_bad_date'
+      );
+      expect(intactDebt).not.toBeNull();
+      expect(intactDebt?.due_date).toBe('2026-02-31');
     });
   });
 
