@@ -8,9 +8,17 @@ import { migration001 } from './migrations/001_initial_schema';
 import { migration002 } from './migrations/002_categories_and_transfers';
 import { migration003 } from './migrations/003_debts_and_counterparties';
 import { migration004 } from './migrations/004_debt_ledger_integrity_upgrade';
+import { migration005, MIGRATION_CHECKSUMS } from './migrations/005_backup_metadata_and_checksums';
 import { runExclusiveTransaction } from './client';
+import { createPreMigrationSafetySnapshot } from '../services/backup/safety';
 
-export const MIGRATIONS: Migration[] = [migration001, migration002, migration003, migration004];
+export const MIGRATIONS: Migration[] = [
+  migration001,
+  migration002,
+  migration003,
+  migration004,
+  migration005,
+];
 
 export interface MigrationResult {
   applied: number;
@@ -36,6 +44,12 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
   const newlyApplied: number[] = [];
   const pending = MIGRATIONS.filter((m) => !appliedSet.has(m.version)).sort((a, b) => a.version - b.version);
 
+  // If there is existing data and pending migrations, create a pre-migration safety snapshot first
+  if (pending.length > 0 && appliedRows.length > 0) {
+    const latestApplied = Math.max(...appliedRows.map((r) => r.version));
+    await createPreMigrationSafetySnapshot(db, latestApplied);
+  }
+
   for (const migration of pending) {
     await runExclusiveTransaction(db, async () => {
       await migration.up(db);
@@ -47,6 +61,22 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
       );
     });
     newlyApplied.push(migration.version);
+  }
+
+  // Backfill checksums for newly applied migrations
+  try {
+    for (const version of newlyApplied) {
+      const cs = MIGRATION_CHECKSUMS[version];
+      if (cs) {
+        await db.runAsync(
+          "UPDATE schema_migrations SET checksum = ? WHERE version = ? AND (checksum IS NULL OR checksum = '');",
+          cs,
+          version
+        );
+      }
+    }
+  } catch {
+    // Ignore if column doesn't exist yet
   }
 
   return {

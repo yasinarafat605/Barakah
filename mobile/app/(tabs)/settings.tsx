@@ -4,11 +4,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
 
+import { useRouter } from 'expo-router';
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { BrandMark } from '@/src/components/BrandMark';
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const colorScheme = useColorScheme() ?? 'light';
   const theme = Colors[colorScheme];
   const { t, i18n } = useTranslation();
@@ -31,6 +33,21 @@ export default function SettingsScreen() {
           <Text style={[styles.title, { color: theme.text }]}>{t('screens.settings.title')}</Text>
           <Text style={[styles.subtitle, { color: theme.textMuted }]}>{t('screens.settings.subtitle')}</Text>
         </View>
+
+        {/* Backup & Recovery Row */}
+        <TouchableOpacity
+          onPress={() => router.push('/settings/backup' as any)}
+          style={[styles.row, { backgroundColor: theme.surface, borderColor: theme.border }]}
+          accessibilityRole="button"
+          accessibilityLabel={t('backup.title')}>
+          <View style={styles.rowContent}>
+            <Ionicons name="shield-checkmark-outline" size={22} color={theme.primary} />
+            <Text style={[styles.rowLabel, { color: theme.text }]}>
+              {t('backup.title')}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+        </TouchableOpacity>
 
         {/* Language Selection Row */}
         <TouchableOpacity

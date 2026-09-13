@@ -71,6 +71,34 @@ export default function RootLayout() {
               headerShown: false,
             }}
           />
+          <Stack.Screen
+            name="settings/backup/index"
+            options={{
+              headerShown: false,
+              title: t('backup.title'),
+            }}
+          />
+          <Stack.Screen
+            name="settings/backup/create"
+            options={{
+              headerShown: false,
+              title: t('backup.createTitle'),
+            }}
+          />
+          <Stack.Screen
+            name="settings/backup/verify"
+            options={{
+              headerShown: false,
+              title: t('backup.verifyTitle'),
+            }}
+          />
+          <Stack.Screen
+            name="settings/restore/index"
+            options={{
+              headerShown: false,
+              title: t('restore.title'),
+            }}
+          />
         </Stack>
         <StatusBar style="auto" />
       </DatabaseProvider>
