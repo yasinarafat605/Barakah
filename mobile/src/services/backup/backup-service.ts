@@ -4,20 +4,23 @@
  *
  * Implements:
  * - In-memory operation lock to prevent concurrent backup/restore
- * - Strict exclusive-transaction point-in-time database snapshot
+ * - Strict exclusive-transaction point-in-time database snapshot passing txn to all queries
  * - Deterministic table SHA-256 checksums & canonical JSON serialization
  * - DEFLATE payload compression
  * - CSPRNG salt and nonce generation via expo-crypto
- * - Scrypt key derivation & AES-256-GCM encryption with 60-byte AAD header
- * - Automatic recording in backup_history metadata table
+ * - Scrypt key derivation & AES-256-GCM encryption with 60-byte BMZ1 header
+ * - Automatic recording in backup_history metadata table with truthful status lifecycle ('generated' -> 'exported' / 'share_cancelled' / 'failed')
+ * - Safe cache cleanup preventing transient cache accumulation
  * - Native file sharing integration via expo-sharing
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { DatabaseConnection } from '../../db/types';
+import { runExclusiveTransaction } from '../../db/client';
 import {
   BackupError,
+  BackupHeader,
   BackupManifest,
   BackupPayloadData,
   BackupHistoryRow,
@@ -51,12 +54,75 @@ export function setOperationInProgress(val: boolean): void {
 }
 
 export interface BackupResult {
+  historyId: string;
   filePath: string;
   fileName: string;
   fileSizeBytes: number;
   sha256Checksum: string;
   recordCount: number;
   envelopeBytes: Uint8Array;
+}
+
+/**
+ * Converts a Uint8Array to a Base64 string efficiently in chunks without byte-by-byte string creation.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Cleans expired transient backup cache files older than maxAgeMs (default 24 hours).
+ */
+export async function cleanExpiredBackupCacheFiles(maxAgeMs: number = 24 * 60 * 60 * 1000): Promise<void> {
+  if (!FileSystem.cacheDirectory) return;
+  try {
+    const files = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
+    const now = Date.now();
+    for (const f of files) {
+      if (f.startsWith('barakah_backup_') && f.endsWith('.fmz')) {
+        const filePath = `${FileSystem.cacheDirectory}${f}`;
+        const info = await FileSystem.getInfoAsync(filePath);
+        if (info.exists && info.modificationTime) {
+          const age = now - (info.modificationTime * 1000);
+          if (age > maxAgeMs) {
+            await FileSystem.deleteAsync(filePath, { idempotent: true });
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-fatal cache cleanup error
+  }
+}
+
+/**
+ * Updates a backup_history record's status and optional error code.
+ */
+export async function updateBackupHistoryStatus(
+  db: DatabaseConnection,
+  historyId: string,
+  status: 'generated' | 'exported' | 'verified' | 'share_cancelled' | 'failed',
+  errorCode?: string | null
+): Promise<void> {
+  try {
+    await db.runAsync(
+      'UPDATE backup_history SET status = ?, error_code = ? WHERE id = ?;',
+      status,
+      errorCode ?? null,
+      historyId
+    );
+  } catch {
+    // Non-fatal if backup_history table does not exist yet
+  }
 }
 
 /**
@@ -92,17 +158,20 @@ export async function createEncryptedBackup(
   isOperationInProgress = true;
 
   try {
-    // 1. Consistent point-in-time read under exclusive transaction
+    // 0. Clean expired cache files
+    await cleanExpiredBackupCacheFiles();
+
+    // 1. Consistent point-in-time read under exclusive transaction executing all queries through txn
     let payloadData!: BackupPayloadData;
 
-    const readSnapshot = async () => {
-      const accounts = await db.getAllAsync<any>('SELECT * FROM accounts ORDER BY id ASC;');
-      const categories = await db.getAllAsync<any>('SELECT * FROM categories ORDER BY id ASC;');
-      const transactions = await db.getAllAsync<any>('SELECT * FROM transactions ORDER BY id ASC;');
-      const counterparties = await db.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
-      const debts = await db.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
-      const debt_transactions = await db.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
-      const schema_migrations = await db.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
+    await runExclusiveTransaction(db, async (txn) => {
+      const accounts = await txn.getAllAsync<any>('SELECT * FROM accounts ORDER BY id ASC;');
+      const categories = await txn.getAllAsync<any>('SELECT * FROM categories ORDER BY id ASC;');
+      const transactions = await txn.getAllAsync<any>('SELECT * FROM transactions ORDER BY id ASC;');
+      const counterparties = await txn.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
+      const debts = await txn.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
+      const debt_transactions = await txn.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
+      const schema_migrations = await txn.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
 
       payloadData = {
         accounts,
@@ -113,13 +182,7 @@ export async function createEncryptedBackup(
         debt_transactions,
         schema_migrations,
       };
-    };
-
-    if (typeof db.withExclusiveTransactionAsync === 'function') {
-      await db.withExclusiveTransactionAsync(readSnapshot);
-    } else {
-      await db.withTransactionAsync(readSnapshot);
-    }
+    });
 
     const totalRecords =
       payloadData.accounts.length +
@@ -162,7 +225,7 @@ export async function createEncryptedBackup(
     // 5. Derive AES-256 key
     const derivedKey = await deriveKeyFromPassphrase(passphrase, salt, kdfParams);
 
-    // 6. Build 60-byte authenticated header
+    // 6. Build 60-byte authenticated header with frozen BMZ1 layout
     const rawHeaderBytes = serializeHeader({
       formatVersion: 1,
       kdfId: 1,
@@ -178,8 +241,8 @@ export async function createEncryptedBackup(
       createdAtMs: now,
     });
 
-    const header = {
-      magic: 'BKBK',
+    const header: BackupHeader = {
+      magic: 'BMZ1',
       formatVersion: 1,
       kdfId: 1,
       kdfN: kdfParams.N,
@@ -195,36 +258,30 @@ export async function createEncryptedBackup(
       rawHeaderBytes,
     };
 
-    // 7. Encrypt payload with header as AAD
+    // 7. Encrypt payload with header as AAD (AES-256-GCM)
     const envelopeBytes = encryptPayloadWithHeader(compressedPayload, derivedKey, header);
     const wholeFileChecksum = computeSha256Hex(envelopeBytes);
 
-    // 8. Write to filesystem if available
+    // 8. Write to filesystem cache directory if available
     const isoDate = new Date(now).toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const fileName = `barakah_backup_${isoDate}.fmz`;
     let filePath = '';
 
     if (FileSystem.cacheDirectory) {
       filePath = `${FileSystem.cacheDirectory}${fileName}`;
-      // Write base64 string to file
-      let binaryStr = '';
-      const len = envelopeBytes.byteLength;
-      for (let i = 0; i < len; i++) {
-        binaryStr += String.fromCharCode(envelopeBytes[i]);
-      }
-      const base64Content = btoa(binaryStr);
+      const base64Content = uint8ArrayToBase64(envelopeBytes);
       await FileSystem.writeAsStringAsync(filePath, base64Content, {
         encoding: FileSystem.EncodingType.Base64,
       });
     }
 
-    // 9. Record in backup_history
+    // 9. Record in backup_history with initial truthful status 'generated'
     const historyId = `bak_${now}`;
     try {
       await db.runAsync(
         `INSERT INTO backup_history (
           id, backup_type, format_version, schema_version, file_name, file_size_bytes, sha256_checksum, record_count, status, error_code, created_at
-        ) VALUES (?, 'manual_export', 1, ?, ?, ?, ?, ?, 'created', NULL, ?);`,
+        ) VALUES (?, 'manual_export', 1, ?, ?, ?, ?, ?, 'generated', NULL, ?);`,
         historyId,
         CURRENT_DATABASE_SCHEMA_VERSION,
         fileName,
@@ -238,6 +295,7 @@ export async function createEncryptedBackup(
     }
 
     return {
+      historyId,
       filePath,
       fileName,
       fileSizeBytes: envelopeBytes.length,
@@ -257,15 +315,21 @@ export async function createEncryptedBackup(
 }
 
 /**
- * Invokes native OS share / save sheet for the exported backup file.
+ * Invokes native OS share / save sheet for the exported backup file and updates history status truthfully.
  */
-export async function shareBackupFile(filePath: string): Promise<void> {
+export async function shareBackupFile(
+  db: DatabaseConnection,
+  historyId: string,
+  filePath: string
+): Promise<void> {
   if (!filePath) {
+    await updateBackupHistoryStatus(db, historyId, 'failed', 'BACKUP_ERR_EXPORT_FAILED');
     throw new BackupError('BACKUP_ERR_EXPORT_FAILED', 'Invalid backup file path for sharing.');
   }
 
   const isAvailable = await Sharing.isAvailableAsync();
   if (!isAvailable) {
+    await updateBackupHistoryStatus(db, historyId, 'failed', 'BACKUP_ERR_SHARING_UNAVAILABLE');
     throw new BackupError(
       'BACKUP_ERR_EXPORT_FAILED',
       'File sharing is not supported on this platform or device.'
@@ -278,16 +342,26 @@ export async function shareBackupFile(filePath: string): Promise<void> {
       dialogTitle: 'Save Barakah Backup',
       UTI: 'public.data',
     });
+    // Mark as exported upon successful return from sharing sheet
+    await updateBackupHistoryStatus(db, historyId, 'exported');
   } catch (err: unknown) {
-    throw new BackupError(
-      'BACKUP_ERR_SHARE_CANCELLED',
-      `Share action was cancelled or failed: ${err instanceof Error ? err.message : ''}`
-    );
+    const errMsg = err instanceof Error ? err.message : '';
+    if (errMsg.toLowerCase().includes('cancel') || errMsg.toLowerCase().includes('dismiss')) {
+      await updateBackupHistoryStatus(db, historyId, 'share_cancelled');
+      throw new BackupError('BACKUP_ERR_SHARE_CANCELLED', 'Share action was cancelled.');
+    } else {
+      await updateBackupHistoryStatus(db, historyId, 'failed', 'BACKUP_ERR_SHARE_FAILED');
+      throw new BackupError(
+        'BACKUP_ERR_SHARE_FAILED',
+        `Share action failed: ${errMsg}`
+      );
+    }
   }
 }
 
 /**
  * Retrieves the most recent successful manual backup record from backup_history.
+ * Only returns backups that reached 'exported' or 'verified' status.
  */
 export async function getLastSuccessfulBackup(
   db: DatabaseConnection
@@ -295,7 +369,7 @@ export async function getLastSuccessfulBackup(
   try {
     return await db.getFirstAsync<BackupHistoryRow>(
       `SELECT * FROM backup_history
-       WHERE backup_type = 'manual_export' AND status = 'created'
+       WHERE backup_type = 'manual_export' AND status IN ('exported', 'verified')
        ORDER BY created_at DESC
        LIMIT 1;`
     );

@@ -77,6 +77,15 @@ describe('Backup and Restore Integration Suite', () => {
       now
     );
 
+    // Debt repayment cash transaction with matching amount and role
+    await db.runAsync(
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
+       VALUES ('tx_repay_1', 'acc_bdt_bank', 'cat_salary', 200000, 'income', NULL, NULL, NULL, 'আংশিক পরিশোধ', ?, ?, ?, NULL);`,
+      now,
+      now,
+      now
+    );
+
     // Counterparty & Debt
     await db.runAsync(
       `INSERT INTO counterparties (id, name, type, phone, email, note, avatar_color, is_archived, created_at, updated_at)
@@ -96,7 +105,7 @@ describe('Backup and Restore Integration Suite', () => {
     // Debt repayment
     await db.runAsync(
       `INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at)
-       VALUES ('dt_001', 'debt_001', 'tx_inc_1', 200000, 'repayment', 'আংশিক পরিশোধ', ?, ?, ?, NULL);`,
+       VALUES ('dt_001', 'debt_001', 'tx_repay_1', 200000, 'repayment', 'আংশিক পরিশোধ', ?, ?, ?, NULL);`,
       now,
       now,
       now
@@ -111,12 +120,12 @@ describe('Backup and Restore Integration Suite', () => {
     );
 
     expect(backupResult.fileSizeBytes).toBeGreaterThan(100);
-    expect(backupResult.recordCount).toBe(31); // 2 acc + 23 cat (22 seeded + 1 custom) + 3 tx (1 inc + 2 trf) + 1 cp + 1 debt + 1 dt = 31 records
+    expect(backupResult.recordCount).toBe(32); // 2 acc + 23 cat + 4 tx (1 inc + 2 trf + 1 repay) + 1 cp + 1 debt + 1 dt = 32 records
     expect(backupResult.sha256Checksum).toHaveLength(64);
 
     // 3. Test inspectBackupHeader
     const inspectedHeader = await inspectBackupHeader(backupResult.envelopeBytes);
-    expect(inspectedHeader.magic).toBe('BKBK');
+    expect(inspectedHeader.magic).toBe('BMZ1');
     expect(inspectedHeader.formatVersion).toBe(1);
     expect(inspectedHeader.schemaVersion).toBe(CURRENT_DATABASE_SCHEMA_VERSION);
 
@@ -133,7 +142,7 @@ describe('Backup and Restore Integration Suite', () => {
     );
 
     expect(previewCtx.preview.rowCounts.accounts).toBe(2);
-    expect(previewCtx.preview.rowCounts.transactions).toBe(3);
+    expect(previewCtx.preview.rowCounts.transactions).toBe(4);
     expect(previewCtx.preview.rowCounts.counterparties).toBe(1);
     expect(previewCtx.preview.rowCounts.debts).toBe(1);
     expect(previewCtx.preview.rowCounts.debt_transactions).toBe(1);
@@ -167,7 +176,7 @@ describe('Backup and Restore Integration Suite', () => {
     const manifest = {
       manifestVersion: 1,
       createdAtMs: now,
-      appVersion: 10000,
+      appVersion: 1,
       schemaVersion: 5,
       rowCounts: {
         accounts: 1,
@@ -176,7 +185,7 @@ describe('Backup and Restore Integration Suite', () => {
         counterparties: 1,
         debts: 1,
         debt_transactions: 0,
-        schema_migrations: 5,
+        schema_migrations: 0,
       },
       tableChecksums: {
         accounts: 'fake',
@@ -255,7 +264,7 @@ describe('Backup and Restore Integration Suite', () => {
       cipherId: 1,
       nonce,
       schemaVersion: 5,
-      appVersion: 10000,
+      appVersion: 1,
       flags: 1,
       createdAtMs: now,
     });
@@ -277,7 +286,7 @@ describe('Backup and Restore Integration Suite', () => {
     const manifest = {
       manifestVersion: 1,
       createdAtMs: now,
-      appVersion: 10000,
+      appVersion: 1,
       schemaVersion: 5,
       rowCounts: {
         accounts: 1,
@@ -286,7 +295,7 @@ describe('Backup and Restore Integration Suite', () => {
         counterparties: 1,
         debts: 1,
         debt_transactions: 1,
-        schema_migrations: 5,
+        schema_migrations: 0,
       },
       tableChecksums: {
         accounts: 'fake',
@@ -377,7 +386,7 @@ describe('Backup and Restore Integration Suite', () => {
       cipherId: 1,
       nonce,
       schemaVersion: 5,
-      appVersion: 10000,
+      appVersion: 1,
       flags: 1,
       createdAtMs: now,
     });

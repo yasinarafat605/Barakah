@@ -57,7 +57,7 @@ describe('Backup Cryptography Subsystem', () => {
     expect(headerBytes.length).toBe(HEADER_SIZE_BYTES);
 
     const parsed = parseHeader(headerBytes);
-    expect(parsed.magic).toBe('BKBK');
+    expect(parsed.magic).toBe('BMZ1');
     expect(parsed.formatVersion).toBe(1);
     expect(parsed.kdfId).toBe(1);
     expect(parsed.kdfN).toBe(32768);

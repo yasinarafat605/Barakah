@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -24,7 +24,8 @@ import {
   executeRestore,
   DecryptedBackupContext,
 } from '@/src/services/backup/restore-service';
-import { RestoreError } from '@/src/services/backup/types';
+import { RestoreError, MAX_BACKUP_FILE_SIZE_BYTES } from '@/src/services/backup/types';
+import { base64ToUint8Array } from '@/src/services/backup/safety';
 
 export default function RestoreScreen() {
   const router = useRouter();
@@ -43,7 +44,10 @@ export default function RestoreScreen() {
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [restoreSuccess, setRestoreSuccess] = useState(false);
 
+  const isWeb = Platform.OS === 'web';
+
   const handlePickFile = async () => {
+    if (isWeb) return;
     setErrorKey(null);
     setVerifiedContext(null);
     setConfirmedReplacement(false);
@@ -59,16 +63,25 @@ export default function RestoreScreen() {
       }
 
       const asset = result.assets[0];
+
+      // Enforce file size check before reading into memory
+      if (asset.size && asset.size > MAX_BACKUP_FILE_SIZE_BYTES) {
+        setErrorKey('RESTORE_ERR_FILE_TOO_LARGE');
+        return;
+      }
+
+      const fileInfo = await FileSystem.getInfoAsync(asset.uri);
+      if (fileInfo.exists && fileInfo.size && fileInfo.size > MAX_BACKUP_FILE_SIZE_BYTES) {
+        setErrorKey('RESTORE_ERR_FILE_TOO_LARGE');
+        return;
+      }
+
       const base64 = await FileSystem.readAsStringAsync(asset.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      const binaryStr = atob(base64);
-      const len = binaryStr.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
+      // Efficient binary decode without byte-by-byte string creation
+      const bytes = base64ToUint8Array(base64);
 
       setSelectedFile({
         name: asset.name,
@@ -80,7 +93,7 @@ export default function RestoreScreen() {
   };
 
   const handleVerifyAndPreview = async () => {
-    if (!selectedFile || passphrase.length === 0 || loading) return;
+    if (isWeb || !selectedFile || passphrase.length === 0 || loading) return;
     setErrorKey(null);
     setLoading(true);
 
@@ -100,37 +113,23 @@ export default function RestoreScreen() {
   };
 
   const handleExecuteRestore = async () => {
-    if (!verifiedContext || !confirmedReplacement || restoring) return;
+    if (isWeb || !verifiedContext || !confirmedReplacement || restoring) return;
+    setErrorKey(null);
+    setRestoring(true);
 
-    Alert.alert(
-      t('restore.warningTitle'),
-      t('restore.warningBody'),
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: t('restore.confirmRestore'),
-          style: 'destructive',
-          onPress: async () => {
-            setErrorKey(null);
-            setRestoring(true);
-
-            try {
-              const db = await getDatabase();
-              await executeRestore(db, verifiedContext);
-              setRestoreSuccess(true);
-            } catch (err: unknown) {
-              if (err instanceof RestoreError) {
-                setErrorKey(err.code);
-              } else {
-                setErrorKey('RESTORE_ERR_PROMOTION_FAILED');
-              }
-            } finally {
-              setRestoring(false);
-            }
-          },
-        },
-      ]
-    );
+    try {
+      const liveDb = await getDatabase();
+      await executeRestore(liveDb, verifiedContext);
+      setRestoreSuccess(true);
+    } catch (err: unknown) {
+      if (err instanceof RestoreError) {
+        setErrorKey(err.code);
+      } else {
+        setErrorKey('RESTORE_ERR_PROMOTION_FAILED');
+      }
+    } finally {
+      setRestoring(false);
+    }
   };
 
   const formattedDate = verifiedContext
@@ -150,7 +149,7 @@ export default function RestoreScreen() {
           onPress={() => router.back()}
           style={styles.backButton}
           accessibilityRole="button"
-          accessibilityLabel="Back">
+          accessibilityLabel={t('actions.back')}>
           <Ionicons name="arrow-back" size={24} color={theme.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: theme.text }]}>
@@ -173,7 +172,8 @@ export default function RestoreScreen() {
             <TouchableOpacity
               onPress={() => router.replace('/(tabs)' as any)}
               style={[styles.actionButton, { backgroundColor: theme.primary, width: '100%' }]}
-              accessibilityRole="button">
+              accessibilityRole="button"
+              accessibilityLabel={t('restore.returnHome')}>
               <Text style={styles.actionButtonText}>{t('restore.returnHome')}</Text>
             </TouchableOpacity>
           </View>
@@ -182,6 +182,15 @@ export default function RestoreScreen() {
             <Text style={[styles.subtitle, { color: theme.textMuted }]}>
               {t('restore.subtitle')}
             </Text>
+
+            {isWeb && (
+              <View style={[styles.errorBanner, { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' }]}>
+                <Ionicons name="alert-circle-outline" size={20} color="#B45309" />
+                <Text style={[styles.errorBannerText, { color: '#B45309' }]}>
+                  {t('restore.webUnsupported')}
+                </Text>
+              </View>
+            )}
 
             {errorKey && (
               <View style={[styles.errorBanner, { backgroundColor: theme.surface, borderColor: '#DC2626' }]}>
@@ -195,8 +204,17 @@ export default function RestoreScreen() {
             {/* Step 1: Pick File */}
             <TouchableOpacity
               onPress={handlePickFile}
-              style={[styles.pickerButton, { backgroundColor: theme.surface, borderColor: theme.border }]}
-              accessibilityRole="button">
+              disabled={isWeb}
+              style={[
+                styles.pickerButton,
+                {
+                  backgroundColor: theme.surface,
+                  borderColor: theme.border,
+                  opacity: isWeb ? 0.5 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={selectedFile ? selectedFile.name : t('restore.selectFile')}>
               <Ionicons name="document-attach-outline" size={24} color={theme.primary} />
               <Text style={[styles.pickerButtonText, { color: theme.text }]}>
                 {selectedFile ? selectedFile.name : t('restore.selectFile')}
@@ -223,7 +241,8 @@ export default function RestoreScreen() {
                   <TouchableOpacity
                     onPress={() => setShowPassphrase((prev) => !prev)}
                     style={styles.toggleButton}
-                    accessibilityRole="button">
+                    accessibilityRole="button"
+                    accessibilityLabel={showPassphrase ? t('backup.hidePassphrase') : t('backup.showPassphrase')}>
                     <Ionicons
                       name={showPassphrase ? 'eye-off-outline' : 'eye-outline'}
                       size={20}
@@ -234,12 +253,13 @@ export default function RestoreScreen() {
 
                 <TouchableOpacity
                   onPress={handleVerifyAndPreview}
-                  disabled={passphrase.length === 0 || loading}
+                  disabled={passphrase.length === 0 || loading || isWeb}
                   style={[
                     styles.actionButton,
-                    { backgroundColor: passphrase.length > 0 ? theme.primary : theme.border },
+                    { backgroundColor: passphrase.length > 0 && !isWeb ? theme.primary : theme.border },
                   ]}
-                  accessibilityRole="button">
+                  accessibilityRole="button"
+                  accessibilityLabel={t('restore.inspectAndPreview')}>
                   {loading ? (
                     <View style={styles.loadingRow}>
                       <ActivityIndicator size="small" color="#FFFFFF" />
@@ -263,16 +283,24 @@ export default function RestoreScreen() {
                     {t('backup.detailsCreated', { date: formattedDate })}
                   </Text>
 
-                  {/* Comparison Table */}
+                  {/* Comparison Table with Localized Headers */}
                   <View style={styles.comparisonTable}>
                     <View style={[styles.tableHeader, { borderBottomColor: theme.border }]}>
-                      <Text style={[styles.tableHeaderCell, { color: theme.textMuted, flex: 2 }]}>Entity</Text>
-                      <Text style={[styles.tableHeaderCell, { color: theme.textMuted, flex: 1, textAlign: 'center' }]}>Backup</Text>
-                      <Text style={[styles.tableHeaderCell, { color: theme.textMuted, flex: 1, textAlign: 'center' }]}>Current</Text>
+                      <Text style={[styles.tableHeaderCell, { color: theme.textMuted, flex: 2 }]}>
+                        {t('restore.tableEntity')}
+                      </Text>
+                      <Text style={[styles.tableHeaderCell, { color: theme.textMuted, flex: 1, textAlign: 'center' }]}>
+                        {t('restore.tableBackup')}
+                      </Text>
+                      <Text style={[styles.tableHeaderCell, { color: theme.textMuted, flex: 1, textAlign: 'center' }]}>
+                        {t('restore.tableCurrent')}
+                      </Text>
                     </View>
 
                     <View style={styles.tableRow}>
-                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>Accounts</Text>
+                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>
+                        {t('restore.tableAccounts')}
+                      </Text>
                       <Text style={[styles.tableCell, { color: theme.text, flex: 1, textAlign: 'center' }]}>
                         {verifiedContext.preview.rowCounts.accounts}
                       </Text>
@@ -282,7 +310,9 @@ export default function RestoreScreen() {
                     </View>
 
                     <View style={styles.tableRow}>
-                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>Transactions</Text>
+                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>
+                        {t('restore.tableTransactions')}
+                      </Text>
                       <Text style={[styles.tableCell, { color: theme.text, flex: 1, textAlign: 'center' }]}>
                         {verifiedContext.preview.rowCounts.transactions}
                       </Text>
@@ -292,7 +322,9 @@ export default function RestoreScreen() {
                     </View>
 
                     <View style={styles.tableRow}>
-                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>Debts</Text>
+                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>
+                        {t('restore.tableDebts')}
+                      </Text>
                       <Text style={[styles.tableCell, { color: theme.text, flex: 1, textAlign: 'center' }]}>
                         {verifiedContext.preview.rowCounts.debts}
                       </Text>
@@ -302,7 +334,9 @@ export default function RestoreScreen() {
                     </View>
 
                     <View style={styles.tableRow}>
-                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>Counterparties</Text>
+                      <Text style={[styles.tableCell, { color: theme.text, flex: 2 }]}>
+                        {t('restore.tableCounterparties')}
+                      </Text>
                       <Text style={[styles.tableCell, { color: theme.text, flex: 1, textAlign: 'center' }]}>
                         {verifiedContext.preview.rowCounts.counterparties}
                       </Text>
@@ -326,7 +360,8 @@ export default function RestoreScreen() {
                     onPress={() => setConfirmedReplacement((prev) => !prev)}
                     style={styles.checkboxRow}
                     accessibilityRole="checkbox"
-                    accessibilityState={{ checked: confirmedReplacement }}>
+                    accessibilityState={{ checked: confirmedReplacement }}
+                    accessibilityLabel={t('restore.confirmCheckbox')}>
                     <Ionicons
                       name={confirmedReplacement ? 'checkbox' : 'square-outline'}
                       size={24}
@@ -340,19 +375,20 @@ export default function RestoreScreen() {
                   {/* Final Action Button */}
                   <TouchableOpacity
                     onPress={handleExecuteRestore}
-                    disabled={!confirmedReplacement || restoring}
+                    disabled={!confirmedReplacement || restoring || isWeb}
                     style={[
                       styles.restoreButton,
-                      { backgroundColor: confirmedReplacement ? '#DC2626' : theme.border },
+                      { backgroundColor: confirmedReplacement && !isWeb ? '#DC2626' : theme.border },
                     ]}
-                    accessibilityRole="button">
+                    accessibilityRole="button"
+                    accessibilityLabel={t('restore.confirmRestore')}>
                     {restoring ? (
                       <View style={styles.loadingRow}>
                         <ActivityIndicator size="small" color="#FFFFFF" />
-                        <Text style={styles.restoreButtonText}>{t('restore.restoring')}</Text>
+                        <Text style={styles.actionButtonText}>{t('restore.restoring')}</Text>
                       </View>
                     ) : (
-                      <Text style={styles.restoreButtonText}>{t('restore.confirmRestore')}</Text>
+                      <Text style={styles.actionButtonText}>{t('restore.confirmRestore')}</Text>
                     )}
                   </TouchableOpacity>
                 </View>
@@ -457,12 +493,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   actionButton: {
-    justifyContent: 'center',
-    alignItems: 'center',
     paddingVertical: 14,
     borderRadius: 12,
-    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginTop: 8,
+    minHeight: 48,
   },
   actionButtonText: {
     color: '#FFFFFF',
@@ -475,38 +511,41 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   previewContainer: {
+    gap: 16,
     marginTop: 8,
   },
   card: {
-    padding: 20,
-    borderRadius: 16,
+    padding: 16,
+    borderRadius: 14,
     borderWidth: 1,
-    gap: 16,
+    gap: 14,
   },
   previewTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
   },
   previewSubtitle: {
     fontSize: 13,
-    marginTop: -8,
   },
   comparisonTable: {
-    gap: 8,
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginTop: 4,
   },
   tableHeader: {
     flexDirection: 'row',
-    paddingBottom: 6,
+    paddingVertical: 10,
     borderBottomWidth: 1,
   },
   tableHeaderCell: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
-    textTransform: 'uppercase',
   },
   tableRow: {
     flexDirection: 'row',
-    paddingVertical: 4,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E5E7EB',
   },
   tableCell: {
     fontSize: 14,
@@ -519,46 +558,43 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   warningTitle: {
-    color: '#DC2626',
     fontSize: 13,
     fontWeight: '700',
+    color: '#991B1B',
   },
   warningBody: {
-    color: '#B91C1C',
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: 17,
+    color: '#B91C1C',
   },
   checkboxRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 10,
+    paddingVertical: 4,
   },
   checkboxText: {
-    flex: 1,
     fontSize: 13,
-    lineHeight: 19,
+    flex: 1,
+    lineHeight: 18,
   },
   restoreButton: {
-    justifyContent: 'center',
-    alignItems: 'center',
     paddingVertical: 14,
     borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 6,
     minHeight: 48,
-    marginTop: 4,
-  },
-  restoreButtonText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
   },
   successTitle: {
     fontSize: 18,
     fontWeight: '700',
-    textAlign: 'center',
+    marginTop: 8,
   },
   successBody: {
     fontSize: 14,
     textAlign: 'center',
     lineHeight: 20,
+    marginBottom: 8,
   },
 });

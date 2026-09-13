@@ -14,8 +14,8 @@ export interface DatabaseConnection {
   runAsync(source: string, ...params: unknown[]): Promise<{ lastInsertRowId: number; changes: number }>;
   getAllAsync<T = unknown>(source: string, ...params: unknown[]): Promise<T[]>;
   getFirstAsync<T = unknown>(source: string, ...params: unknown[]): Promise<T | null>;
-  withTransactionAsync(task: () => Promise<void>): Promise<void>;
-  withExclusiveTransactionAsync(task: () => Promise<void>): Promise<void>;
+  withTransactionAsync<T = void>(task: (txn: DatabaseConnection) => Promise<T>): Promise<T>;
+  withExclusiveTransactionAsync<T = void>(task: (txn: DatabaseConnection) => Promise<T>): Promise<T>;
   closeAsync(): Promise<void>;
 }
 

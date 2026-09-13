@@ -17,15 +17,20 @@ import {
   DebtTransactionRow,
 } from '../../db/types';
 
-export const BACKUP_MAGIC_BYTES = new Uint8Array([0x42, 0x4B, 0x42, 0x4B]); // 'BKBK'
+export const BACKUP_MAGIC_BYTES = new Uint8Array([0x42, 0x4D, 0x5A, 0x31]); // 'BMZ1'
 export const BACKUP_FORMAT_VERSION = 1;
-export const CURRENT_DATABASE_SCHEMA_VERSION = 5;
-export const APP_VERSION_CODE = 10000; // 1.0.0
+export const MIN_RESTORABLE_SCHEMA_VERSION = 4;
+export const MAX_RESTORABLE_SCHEMA_VERSION = 6;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 6;
+export const APP_VERSION_CODE = 1; // 1.0.0
 
 export const HEADER_SIZE_BYTES = 60;
 export const SALT_SIZE_BYTES = 16;
 export const NONCE_SIZE_BYTES = 12;
-export const TAG_SIZE_BYTES = 16;
+export const TAG_SIZE_BYTES = 16; // 16-byte AES-256-GCM authentication tag
+
+export const KDF_ID_SCRYPT = 1;
+export const CIPHER_ID_AES_256_GCM = 1;
 
 export const MIN_PASSPHRASE_LENGTH = 10;
 
@@ -48,13 +53,16 @@ export const DEFAULT_KDF_PARAMS = {
 } as const;
 
 export const FLAG_COMPRESSED_DEFLATE = 1 << 0; // Bit 0: Deflate compression enabled
+export const FLAGS_RESERVED_MASK = 0xfe; // Bits 1..7 reserved, must be 0
 
 export const MAX_BACKUP_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB max .fmz envelope
 export const MAX_DECOMPRESSED_PAYLOAD_BYTES = 50 * 1024 * 1024; // 50 MB max uncompressed JSON
 
 export interface BackupHeader {
-  magic: string; // 'BKBK'
+  magic: 'BMZ1';
   formatVersion: number; // 1
+  schemaVersion: number;
+  createdAtMs: number; // Milliseconds since Unix epoch
   kdfId: number; // 1 = Scrypt
   kdfN: number;
   kdfR: number;
@@ -62,9 +70,7 @@ export interface BackupHeader {
   salt: Uint8Array; // 16 bytes
   cipherId: number; // 1 = AES-256-GCM
   nonce: Uint8Array; // 12 bytes
-  schemaVersion: number;
   appVersion: number;
-  createdAtMs: number; // Milliseconds since Unix epoch
   flags: number; // Bitmask (bit 0 = DEFLATE)
   rawHeaderBytes: Uint8Array; // Exact 60 bytes used as AAD
 }
@@ -123,9 +129,16 @@ export interface BackupHistoryRow {
   file_size_bytes: number;
   sha256_checksum: string;
   record_count: number;
-  status: 'created' | 'verified' | 'failed';
+  status: 'created' | 'generated' | 'exported' | 'verified' | 'share_cancelled' | 'failed';
   error_code: string | null;
   created_at: number;
+}
+
+export interface DecryptedBackupContext {
+  header: BackupHeader;
+  manifest: BackupManifest;
+  preview: RestorePreview;
+  envelopeBytes: Uint8Array;
 }
 
 export interface RestorePreview {
@@ -156,7 +169,10 @@ export type BackupErrorCode =
   | 'BACKUP_ERR_LOCK_ACTIVE'
   | 'BACKUP_ERR_DATABASE_EMPTY'
   | 'BACKUP_ERR_EXPORT_FAILED'
-  | 'BACKUP_ERR_SHARE_CANCELLED';
+  | 'BACKUP_ERR_SNAPSHOT_FAILED'
+  | 'BACKUP_ERR_SHARE_CANCELLED'
+  | 'BACKUP_ERR_SHARE_FAILED'
+  | 'BACKUP_ERR_SHARING_UNAVAILABLE';
 
 export type RestoreErrorCode =
   | 'RESTORE_ERR_INVALID_FILE_TYPE'
@@ -164,19 +180,31 @@ export type RestoreErrorCode =
   | 'RESTORE_ERR_FILE_TRUNCATED'
   | 'RESTORE_ERR_INVALID_MAGIC'
   | 'RESTORE_ERR_UNSUPPORTED_VERSION'
+  | 'RESTORE_ERR_UNSUPPORTED_SCHEMA_VERSION'
   | 'RESTORE_ERR_UNSUPPORTED_KDF'
+  | 'RESTORE_ERR_UNSUPPORTED_CIPHER'
+  | 'RESTORE_ERR_INVALID_FLAGS'
   | 'RESTORE_ERR_AUTH_FAILED'
   | 'RESTORE_ERR_DECOMPRESS_FAILED'
+  | 'RESTORE_ERR_DECOMPRESSION_BOMB'
   | 'RESTORE_ERR_PAYLOAD_TOO_LARGE'
   | 'RESTORE_ERR_INVALID_JSON'
   | 'RESTORE_ERR_INVALID_MANIFEST'
+  | 'RESTORE_ERR_HEADER_MANIFEST_MISMATCH'
+  | 'RESTORE_ERR_HEADER_MISMATCH'
   | 'RESTORE_ERR_SCHEMA_VALIDATION'
+  | 'RESTORE_ERR_ROW_COUNT_MISMATCH'
   | 'RESTORE_ERR_CHECKSUM_MISMATCH'
+  | 'RESTORE_ERR_TABLE_CHECKSUM_MISMATCH'
   | 'RESTORE_ERR_INVARIANT_FAILED'
+  | 'RESTORE_ERR_INVALID_FINANCIAL_INVARIANT'
   | 'RESTORE_ERR_INTEGRITY_CHECK_FAILED'
   | 'RESTORE_ERR_FK_CHECK_FAILED'
   | 'RESTORE_ERR_SAFETY_SNAPSHOT_FAILED'
+  | 'RESTORE_ERR_CONCURRENT_OPERATION'
   | 'RESTORE_ERR_PROMOTION_FAILED'
+  | 'RESTORE_ERR_ACTIVATION_FAILED'
+  | 'RESTORE_ERR_POST_ACTIVATION_VERIFICATION_FAILED'
   | 'RESTORE_ERR_ROLLBACK_FAILED';
 
 export class BackupError extends Error {

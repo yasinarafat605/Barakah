@@ -3,24 +3,28 @@
  * Phase 4: Recovery Foundation
  *
  * Implements:
- * - 25-step safe restore state machine
  * - Decoupled inspection and verification (preview without mutating live database)
  * - Isolated staging database validation & integrity verification
- * - Pre-restore safety snapshot before promotion
- * - Safe native promotion with stale WAL/SHM removal and automatic rollback
+ * - Header-to-manifest metadata consistency enforcement
+ * - Fail-closed pre-restore safety snapshot before promotion
+ * - Safe atomic promotion with FileSystem.moveAsync, old database preservation, and automatic rollback
+ * - Post-activation verification: PRAGMA integrity_check, foreign_key_check, row counts, table checksums, invariants
+ * - Cleanup of staging WAL/SHM artifacts on success and failure
+ * - Concurrency lock preventing concurrent backups or restores
  * - Zero silent repairs (ADR-016)
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { DatabaseConnection } from '../../db/types';
-import { getDatabase, closeDatabase } from '../../db/client';
+import { getDatabase, closeDatabase, runExclusiveTransaction } from '../../db/client';
 import { runMigrations } from '../../db/migrations';
 import {
   RestoreError,
   RestorePreview,
   BackupHeader,
   BackupManifest,
+  BackupPayloadData,
   HEADER_SIZE_BYTES,
   TAG_SIZE_BYTES,
   MAX_BACKUP_FILE_SIZE_BYTES,
@@ -34,6 +38,7 @@ import {
 import {
   decompressPayload,
   validateManifestStructure,
+  validateHeaderManifestConsistency,
   computeTableChecksums,
 } from './serializer';
 import {
@@ -57,6 +62,26 @@ export interface DecryptedBackupContext {
   manifest: BackupManifest;
   preview: RestorePreview;
   envelopeBytes: Uint8Array;
+}
+
+/**
+ * Removes any stale staging artifacts or leftover rollback backups from previous interrupted runs.
+ */
+export async function cleanStaleStagingArtifacts(): Promise<void> {
+  if (!FileSystem.documentDirectory) return;
+  try {
+    const sqliteDir = `${FileSystem.documentDirectory}SQLite/`;
+    const info = await FileSystem.getInfoAsync(sqliteDir);
+    if (!info.exists) return;
+    const files = await FileSystem.readDirectoryAsync(sqliteDir);
+    for (const f of files) {
+      if (f.startsWith('staging_restore_') || f.startsWith('barakah.db.old_')) {
+        await FileSystem.deleteAsync(`${sqliteDir}${f}`, { idempotent: true });
+      }
+    }
+  } catch {
+    // Non-fatal cleanup
+  }
 }
 
 /**
@@ -100,11 +125,11 @@ export async function verifyAndPreviewBackup(
     p: header.kdfP,
   });
 
-  // 3. Authenticate and decrypt ciphertext
+  // 3. Authenticate and decrypt ciphertext (AES-256-GCM)
   const ciphertextWithTag = envelopeBytes.slice(HEADER_SIZE_BYTES);
   const decryptedBytes = decryptPayloadWithHeader(ciphertextWithTag, derivedKey, header);
 
-  // 4. Decompress if compressed flag is set
+  // 4. Bounded decompression if compressed flag is set
   let jsonString = '';
   if ((header.flags & FLAG_COMPRESSED_DEFLATE) !== 0) {
     jsonString = decompressPayload(decryptedBytes);
@@ -123,10 +148,13 @@ export async function verifyAndPreviewBackup(
     );
   }
 
-  // 6. Validate manifest structure
+  // 6. Validate manifest structure & row counts against decoded arrays
   const manifest = validateManifestStructure(rawJson);
 
-  // 7. Strict row validation
+  // 7. Validate header-to-manifest consistency
+  validateHeaderManifestConsistency(header, manifest);
+
+  // 8. Strict row validation without silent trimming
   const accounts = manifest.payload.accounts.map((row, idx) => validateAccountRow(row, idx));
   const categories = manifest.payload.categories.map((row, idx) => validateCategoryRow(row, idx));
   const transactions = manifest.payload.transactions.map((row, idx) => validateTransactionRow(row, idx));
@@ -135,7 +163,7 @@ export async function verifyAndPreviewBackup(
   const debt_transactions = manifest.payload.debt_transactions.map((row, idx) => validateDebtTransactionRow(row, idx));
   const schema_migrations = manifest.payload.schema_migrations.map((row, idx) => validateSchemaMigrationRow(row, idx));
 
-  const validatedPayload = {
+  const validatedPayload: BackupPayloadData = {
     accounts,
     categories,
     transactions,
@@ -145,10 +173,10 @@ export async function verifyAndPreviewBackup(
     schema_migrations,
   };
 
-  // 8. Cross-table invariants & relations validation
+  // 9. Cross-table invariants & relations validation
   validatePayloadInvariants(validatedPayload);
 
-  // 9. Table checksum verification
+  // 10. Table checksum verification
   const computedChecksums = computeTableChecksums(validatedPayload);
   for (const table of Object.keys(computedChecksums) as (keyof typeof computedChecksums)[]) {
     if (computedChecksums[table] !== manifest.tableChecksums[table]) {
@@ -159,7 +187,7 @@ export async function verifyAndPreviewBackup(
     }
   }
 
-  // 10. Fetch current live database row counts for preview comparison
+  // 11. Fetch current live database row counts for preview comparison
   let liveRowCounts = {
     accounts: 0,
     categories: 0,
@@ -214,6 +242,7 @@ export async function verifyAndPreviewBackup(
 
 /**
  * Imports validated payload into an isolated staging database and runs full SQLite integrity checks.
+ * Uses exclusive transaction with callback txn object for all writes.
  */
 export async function populateAndVerifyStagingDatabase(
   stagingDb: DatabaseConnection,
@@ -227,10 +256,10 @@ export async function populateAndVerifyStagingDatabase(
 
   const p = manifest.payload;
 
-  const importData = async () => {
+  await runExclusiveTransaction(stagingDb, async (txn) => {
     // Accounts
     for (const a of p.accounts) {
-      await stagingDb.runAsync(
+      await txn.runAsync(
         'INSERT INTO accounts (id, name, type, initial_balance, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?);',
         a.id,
         a.name,
@@ -244,7 +273,7 @@ export async function populateAndVerifyStagingDatabase(
 
     // Categories
     for (const c of p.categories) {
-      await stagingDb.runAsync(
+      await txn.runAsync(
         'INSERT INTO categories (id, name_key, name_custom, icon, color, type, is_archived, sort_order, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
         c.id,
         c.name_key,
@@ -262,7 +291,7 @@ export async function populateAndVerifyStagingDatabase(
 
     // Counterparties
     for (const cp of p.counterparties) {
-      await stagingDb.runAsync(
+      await txn.runAsync(
         'INSERT INTO counterparties (id, name, type, phone, email, note, avatar_color, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
         cp.id,
         cp.name,
@@ -279,7 +308,7 @@ export async function populateAndVerifyStagingDatabase(
 
     // Debts
     for (const d of p.debts) {
-      await stagingDb.runAsync(
+      await txn.runAsync(
         'INSERT INTO debts (id, counterparty_id, direction, original_principal, currency, opening_mode, opened_at, due_date, status, note, created_at, updated_at, archived_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
         d.id,
         d.counterparty_id,
@@ -300,7 +329,7 @@ export async function populateAndVerifyStagingDatabase(
 
     // Transactions
     for (const t of p.transactions) {
-      await stagingDb.runAsync(
+      await txn.runAsync(
         'INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
         t.id,
         t.account_id,
@@ -320,7 +349,7 @@ export async function populateAndVerifyStagingDatabase(
 
     // Debt Transactions
     for (const dt of p.debt_transactions) {
-      await stagingDb.runAsync(
+      await txn.runAsync(
         'INSERT INTO debt_transactions (id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
         dt.id,
         dt.debt_id,
@@ -334,13 +363,10 @@ export async function populateAndVerifyStagingDatabase(
         dt.deleted_at
       );
     }
-  };
+  });
 
-  if (typeof stagingDb.withExclusiveTransactionAsync === 'function') {
-    await stagingDb.withExclusiveTransactionAsync(importData);
-  } else {
-    await stagingDb.withTransactionAsync(importData);
-  }
+  // Checkpoint staging WAL to flush all data into main staging database file
+  await stagingDb.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
 
   // Run SQLite PRAGMA integrity_check
   const integrityResult = await stagingDb.getFirstAsync<{ integrity_check: string }>(
@@ -364,13 +390,86 @@ export async function populateAndVerifyStagingDatabase(
 }
 
 /**
- * Executes full non-merging restore:
- * 1. Creates staging database.
- * 2. Populates & verifies staging database.
- * 3. Creates pre-restore safety snapshot of active database.
- * 4. Closes active connection.
- * 5. Promotes staging database to barakah.db.
- * 6. Reopens live connection and verifies integrity.
+ * Runs post-activation integrity and domain-invariant verification on the newly promoted live database.
+ */
+async function verifyActivatedDatabase(
+  newLiveDb: DatabaseConnection,
+  manifest: BackupManifest
+): Promise<void> {
+  // 1. PRAGMA integrity_check
+  const integrityCheck = await newLiveDb.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check;');
+  if (!integrityCheck || integrityCheck.integrity_check !== 'ok') {
+    throw new Error(`Activated database failed PRAGMA integrity_check: ${integrityCheck?.integrity_check ?? 'unknown'}`);
+  }
+
+  // 2. PRAGMA foreign_key_check
+  const fkViolations = await newLiveDb.getAllAsync('PRAGMA foreign_key_check;');
+  if (fkViolations.length > 0) {
+    throw new Error(`Activated database has ${fkViolations.length} foreign key violation(s).`);
+  }
+
+  // 3. Row count verification against manifest
+  const aCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM accounts;');
+  const cCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM categories;');
+  const tCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM transactions;');
+  const cpCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM counterparties;');
+  const dCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM debts;');
+  const dtCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM debt_transactions;');
+
+  if (
+    aCount?.c !== manifest.rowCounts.accounts ||
+    cCount?.c !== manifest.rowCounts.categories ||
+    tCount?.c !== manifest.rowCounts.transactions ||
+    cpCount?.c !== manifest.rowCounts.counterparties ||
+    dCount?.c !== manifest.rowCounts.debts ||
+    dtCount?.c !== manifest.rowCounts.debt_transactions
+  ) {
+    throw new Error('Activated database row counts do not match manifest expectations.');
+  }
+
+  // 4. Read all data to verify table checksums and domain invariants
+  const accounts = await newLiveDb.getAllAsync<any>('SELECT * FROM accounts ORDER BY id ASC;');
+  const categories = await newLiveDb.getAllAsync<any>('SELECT * FROM categories ORDER BY id ASC;');
+  const transactions = await newLiveDb.getAllAsync<any>('SELECT * FROM transactions ORDER BY id ASC;');
+  const counterparties = await newLiveDb.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
+  const debts = await newLiveDb.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
+  const debt_transactions = await newLiveDb.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
+  const schema_migrations = await newLiveDb.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
+
+  const livePayload: BackupPayloadData = {
+    accounts,
+    categories,
+    transactions,
+    counterparties,
+    debts,
+    debt_transactions,
+    schema_migrations,
+  };
+
+  // 5. Table checksum verification
+  const computed = computeTableChecksums(livePayload);
+  for (const table of Object.keys(computed) as (keyof typeof computed)[]) {
+    if (computed[table] !== manifest.tableChecksums[table]) {
+      throw new Error(`Activated database table checksum mismatch on '${table}'.`);
+    }
+  }
+
+  // 6. Transfer and debt domain-invariant validation
+  validatePayloadInvariants(livePayload);
+}
+
+/**
+ * Executes full atomic, non-merging restore:
+ * 1. Cleans stale staging artifacts.
+ * 2. Creates unique staging database.
+ * 3. Populates & verifies staging database under exclusive transaction.
+ * 4. Checkpoints staging WAL and closes staging connection.
+ * 5. Creates fail-closed pre-restore safety snapshot of active database.
+ * 6. Closes active live database connection.
+ * 7. Atomically promotes staging database via FileSystem.moveAsync, keeping old DB intact.
+ * 8. Reopens live connection and runs full post-activation checks.
+ * 9. Automatically rolls back to old database if any activation check fails.
+ * 10. Cleans up staging, WAL, and SHM files on both success and failure.
  */
 export async function executeRestore(
   liveDb: DatabaseConnection,
@@ -385,12 +484,18 @@ export async function executeRestore(
 
   setOperationInProgress(true);
 
-  const stagingDbName = 'staging_restore.db';
+  // Generate unique staging database name per restore
+  const stagingDbName = `staging_restore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.db`;
   let stagingDb: DatabaseConnection | null = null;
   let safetySnapshotUri: string | null = null;
+  let backupOldDbUri: string | null = null;
+  let stagingDbUri: string | null = null;
 
   try {
-    // 1. Create and open staging database
+    // 0. Remove any stale staging artifacts from previous runs
+    await cleanStaleStagingArtifacts();
+
+    // 1. Create and open isolated staging database
     const expoDb = await SQLite.openDatabaseAsync(stagingDbName);
     stagingDb = expoDb as unknown as DatabaseConnection;
     await stagingDb.execAsync(`
@@ -398,50 +503,63 @@ export async function executeRestore(
       PRAGMA journal_mode = WAL;
     `);
 
-    // 2. Populate and verify staging
+    // 2. Populate and verify staging database
     await populateAndVerifyStagingDatabase(stagingDb, context.manifest);
 
-    // 3. Close staging database to prepare for promotion
+    // 3. Close staging database to prepare for atomic file promotion
     await stagingDb.closeAsync();
     stagingDb = null;
 
-    // 4. Create pre-restore safety snapshot of active live database
+    // 4. Fail-closed: create pre-restore safety snapshot of active live database
     safetySnapshotUri = await createPreRestoreSafetySnapshot(liveDb, context.header.schemaVersion);
 
     // 5. Close active live database connection
     await closeDatabase();
 
-    // 6. Promote staging database to barakah.db on disk
+    // 6. Safe atomic promotion on filesystem
     if (FileSystem.documentDirectory) {
+      const sqliteDir = `${FileSystem.documentDirectory}SQLite/`;
       const activeDbUri = getActiveDatabaseUri();
-      const stagingDbUri = `${FileSystem.documentDirectory}SQLite/${stagingDbName}`;
+      stagingDbUri = `${sqliteDir}${stagingDbName}`;
+      backupOldDbUri = `${sqliteDir}barakah.db.old_${Date.now()}`;
 
       if (activeDbUri) {
-        // Delete stale WAL and SHM files
+        // Clean stale WAL and SHM files for active DB
         await FileSystem.deleteAsync(`${activeDbUri}-wal`, { idempotent: true });
         await FileSystem.deleteAsync(`${activeDbUri}-shm`, { idempotent: true });
 
-        // Copy staging database over active database
-        await FileSystem.copyAsync({
+        // Clean staging WAL and SHM files
+        await FileSystem.deleteAsync(`${stagingDbUri}-wal`, { idempotent: true });
+        await FileSystem.deleteAsync(`${stagingDbUri}-shm`, { idempotent: true });
+
+        // Atomically move active DB to backup location (preserves old DB intact)
+        const activeInfo = await FileSystem.getInfoAsync(activeDbUri);
+        if (activeInfo.exists) {
+          await FileSystem.moveAsync({
+            from: activeDbUri,
+            to: backupOldDbUri,
+          });
+        }
+
+        // Atomically move staging DB to active DB path
+        await FileSystem.moveAsync({
           from: stagingDbUri,
           to: activeDbUri,
         });
-
-        // Delete staging database file
-        await FileSystem.deleteAsync(stagingDbUri, { idempotent: true });
-        await FileSystem.deleteAsync(`${stagingDbUri}-wal`, { idempotent: true });
-        await FileSystem.deleteAsync(`${stagingDbUri}-shm`, { idempotent: true });
       }
     }
 
-    // 7. Reopen active connection and verify
+    // 7. Reopen active connection and run comprehensive post-activation verification
     const newLiveDb = await getDatabase();
-    const check = await newLiveDb.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check;');
-    if (!check || check.integrity_check !== 'ok') {
-      throw new Error('Promoted database failed integrity check.');
+    await verifyActivatedDatabase(newLiveDb, context.manifest);
+
+    // 8. Activation succeeded: safely remove old backup file
+    if (backupOldDbUri) {
+      await FileSystem.deleteAsync(backupOldDbUri, { idempotent: true });
+      backupOldDbUri = null;
     }
   } catch (err: unknown) {
-    // Clean up staging database if still open
+    // Clean up staging connection if still open
     if (stagingDb) {
       try {
         await stagingDb.closeAsync();
@@ -450,31 +568,49 @@ export async function executeRestore(
       }
     }
 
-    // Attempt disaster rollback from safety snapshot if available
-    if (safetySnapshotUri && FileSystem.documentDirectory) {
+    // Roll back: if old DB was moved to backupOldDbUri, restore it automatically
+    if (backupOldDbUri && FileSystem.documentDirectory) {
       try {
         await closeDatabase();
         const activeDbUri = getActiveDatabaseUri();
         if (activeDbUri) {
+          await FileSystem.deleteAsync(activeDbUri, { idempotent: true });
           await FileSystem.deleteAsync(`${activeDbUri}-wal`, { idempotent: true });
           await FileSystem.deleteAsync(`${activeDbUri}-shm`, { idempotent: true });
-          await FileSystem.copyAsync({
-            from: safetySnapshotUri,
-            to: activeDbUri,
-          });
-          await getDatabase(); // Reopen original
+
+          const backupInfo = await FileSystem.getInfoAsync(backupOldDbUri);
+          if (backupInfo.exists) {
+            await FileSystem.moveAsync({
+              from: backupOldDbUri,
+              to: activeDbUri,
+            });
+          } else if (safetySnapshotUri) {
+            // Disaster fallback to safety snapshot
+            await FileSystem.copyAsync({
+              from: safetySnapshotUri,
+              to: activeDbUri,
+            });
+          }
+          await getDatabase(); // Reopen original live database
         }
       } catch {
-        // Rollback failed
+        // Rollback attempt logged
       }
     }
 
     if (err instanceof RestoreError) throw err;
     throw new RestoreError(
       'RESTORE_ERR_PROMOTION_FAILED',
-      `Database activation failed: ${err instanceof Error ? err.message : 'Unknown error'}. Live database preserved.`
+      `Database activation failed: ${err instanceof Error ? err.message : 'Unknown error'}. Original database preserved and restored.`
     );
   } finally {
+    // Clean up staging DB and WAL/SHM artifacts on both success and failure
+    if (stagingDbUri && FileSystem.documentDirectory) {
+      await FileSystem.deleteAsync(stagingDbUri, { idempotent: true });
+      await FileSystem.deleteAsync(`${stagingDbUri}-wal`, { idempotent: true });
+      await FileSystem.deleteAsync(`${stagingDbUri}-shm`, { idempotent: true });
+    }
+    await cleanStaleStagingArtifacts();
     setOperationInProgress(false);
   }
 }

@@ -172,14 +172,14 @@ export async function createDebt(
 
   let linkedTransactionId: string | null = null;
 
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     // 1. If new_with_cash, validate account and create cash transaction
     if (input.openingMode === 'new_with_cash') {
       if (!input.accountId) {
         throw new Error('Account ID is required when opening a debt with cash movement.');
       }
 
-      const acc = await db.getFirstAsync<{ id: string; currency: string }>(
+      const acc = await txn.getFirstAsync<{ id: string; currency: string }>(
         'SELECT id, currency FROM accounts WHERE id = ?;',
         input.accountId
       );
@@ -201,7 +201,7 @@ export async function createDebt(
       const categoryId =
         input.direction === 'borrowed' ? 'cat_inc_loan_received' : 'cat_exp_loan_given';
 
-      await db.runAsync(
+      await txn.runAsync(
         `INSERT INTO transactions (
            id, account_id, category_id, amount, type, transfer_id, transfer_role,
            related_account_id, note, timestamp, created_at, updated_at, deleted_at
@@ -219,7 +219,7 @@ export async function createDebt(
     }
 
     // 2. Insert debt row
-    await db.runAsync(
+    await txn.runAsync(
       `INSERT INTO debts (
          id, counterparty_id, direction, original_principal, currency, opening_mode,
          opened_at, due_date, status, note, created_at, updated_at, deleted_at
@@ -241,7 +241,7 @@ export async function createDebt(
     // For existing_balance agreements, the principal is held on debts.original_principal with zero cash movement
     if (input.openingMode === 'new_with_cash' && linkedTransactionId) {
       const dtxId = generateDebtTransactionId();
-      await db.runAsync(
+      await txn.runAsync(
         `INSERT INTO debt_transactions (
            id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
          ) VALUES (?, ?, ?, ?, 'disbursement', ?, ?, ?, ?, NULL);`,
@@ -288,9 +288,9 @@ export async function recordRepayment(
   let linkedTxId: string | null = null;
   let debtId = input.debtId;
 
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     // 1. Re-query debt and current derived balance inside the exclusive transaction lock
-    const debtRow = await db.getFirstAsync<{
+    const debtRow = await txn.getFirstAsync<{
       id: string;
       status: string;
       original_principal: number;
@@ -348,7 +348,7 @@ export async function recordRepayment(
       throw new Error('Account ID is required to record a debt repayment transaction.');
     }
 
-    const acc = await db.getFirstAsync<{ id: string; currency: string }>(
+    const acc = await txn.getFirstAsync<{ id: string; currency: string }>(
       'SELECT id, currency FROM accounts WHERE id = ?;',
       input.accountId
     );
@@ -372,7 +372,7 @@ export async function recordRepayment(
         ? 'cat_exp_loan_repayment'
         : 'cat_inc_loan_repayment_received';
 
-    await db.runAsync(
+    await txn.runAsync(
       `INSERT INTO transactions (
          id, account_id, category_id, amount, type, transfer_id, transfer_role,
          related_account_id, note, timestamp, created_at, updated_at, deleted_at
@@ -389,7 +389,7 @@ export async function recordRepayment(
     );
 
     // 3. Insert debt_transaction entry
-    await db.runAsync(
+    await txn.runAsync(
       `INSERT INTO debt_transactions (
          id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
        ) VALUES (?, ?, ?, ?, 'repayment', ?, ?, ?, ?, NULL);`,
@@ -406,7 +406,7 @@ export async function recordRepayment(
     // 4. Auto-settle if new outstanding reaches exactly zero
     const newOutstanding = currentOutstanding - input.amountMinor;
     if (newOutstanding === 0) {
-      await db.runAsync(
+      await txn.runAsync(
         "UPDATE debts SET status = 'settled', updated_at = ? WHERE id = ?;",
         now,
         debtRow.id
@@ -450,8 +450,8 @@ export async function recordAdjustment(
   const note = input.note ? input.note.trim() : null;
   const dtxId = generateDebtTransactionId();
 
-  await runExclusiveTransaction(db, async () => {
-    const debtRow = await db.getFirstAsync<{
+  await runExclusiveTransaction(db, async (txn) => {
+    const debtRow = await txn.getFirstAsync<{
       id: string;
       status: string;
       original_principal: number;
@@ -499,7 +499,7 @@ export async function recordAdjustment(
     }
 
     // Insert debt_transaction
-    await db.runAsync(
+    await txn.runAsync(
       `INSERT INTO debt_transactions (
          id, debt_id, transaction_id, amount, role, note, occurred_at, created_at, updated_at, deleted_at
        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL);`,
@@ -519,13 +519,13 @@ export async function recordAdjustment(
         : currentOutstanding - input.amountMinor;
 
     if (newOutstanding === 0) {
-      await db.runAsync(
+      await txn.runAsync(
         "UPDATE debts SET status = 'settled', updated_at = ? WHERE id = ?;",
         now,
         debtRow.id
       );
     } else if (newOutstanding > 0 && debtRow.status === 'settled') {
-      await db.runAsync(
+      await txn.runAsync(
         "UPDATE debts SET status = 'active', updated_at = ? WHERE id = ?;",
         now,
         debtRow.id
@@ -614,7 +614,7 @@ export async function softDeleteRepayment(
     throw new Error(`Debt transaction not found: ${debtTransactionId}`);
   }
 
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     if (dtx.role === 'disbursement') {
       throw new Error(
         'Cannot delete a debt disbursement transaction directly. Use the debt cancellation operation instead.'
@@ -622,7 +622,7 @@ export async function softDeleteRepayment(
     }
 
     // Check parent debt is not archived
-    const parentDebt = await db.getFirstAsync<{ id: string; archived_at: number | null }>(
+    const parentDebt = await txn.getFirstAsync<{ id: string; archived_at: number | null }>(
       'SELECT id, archived_at FROM debts WHERE id = ?;',
       dtx.debt_id
     );
@@ -634,7 +634,7 @@ export async function softDeleteRepayment(
     }
 
     // Soft delete debt transaction
-    await db.runAsync(
+    await txn.runAsync(
       'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
       now,
       now,
@@ -643,7 +643,7 @@ export async function softDeleteRepayment(
 
     // Soft delete linked cash transaction if present
     if (dtx.transaction_id) {
-      await db.runAsync(
+      await txn.runAsync(
         'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
         now,
         now,
@@ -652,9 +652,9 @@ export async function softDeleteRepayment(
     }
 
     // Recheck debt status: if debt was settled, re-derive outstanding and reopen if > 0
-    const debt = await getDebtById(dtx.debt_id, db);
+    const debt = await getDebtById(dtx.debt_id, txn);
     if (debt && debt.status === 'settled' && debt.outstanding_principal > 0) {
-      await db.runAsync(
+      await txn.runAsync(
         "UPDATE debts SET status = 'active', updated_at = ? WHERE id = ?;",
         now,
         debt.id
@@ -695,8 +695,8 @@ export async function restoreRepayment(
     );
   }
 
-  await runExclusiveTransaction(db, async () => {
-    const debtRow = await db.getFirstAsync<{
+  await runExclusiveTransaction(db, async (txn) => {
+    const debtRow = await txn.getFirstAsync<{
       id: string;
       status: string;
       original_principal: number;
@@ -720,7 +720,7 @@ export async function restoreRepayment(
          ), 0) AS total_repaid
        FROM debts d
        LEFT JOIN debt_transactions dt ON d.id = dt.debt_id
-       WHERE d.id = ?
+       WHERE d.id = ? AND d.deleted_at IS NULL
        GROUP BY d.id;`,
       dtx.debt_id
     );
@@ -744,15 +744,15 @@ export async function restoreRepayment(
       }
     }
 
-    await db.runAsync(
+    await txn.runAsync(
       'UPDATE debt_transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
       now,
       debtTransactionId
     );
 
     if (dtx.transaction_id) {
-      await db.runAsync(
-        'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
+      await txn.runAsync(
+        'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL;',
         now,
         dtx.transaction_id
       );
@@ -764,13 +764,13 @@ export async function restoreRepayment(
         : currentOutstanding - dtx.amount;
 
     if (newOutstanding === 0) {
-      await db.runAsync(
+      await txn.runAsync(
         "UPDATE debts SET status = 'settled', updated_at = ? WHERE id = ?;",
         now,
         debtRow.id
       );
     } else if (newOutstanding > 0 && debtRow.status === 'settled') {
-      await db.runAsync(
+      await txn.runAsync(
         "UPDATE debts SET status = 'active', updated_at = ? WHERE id = ?;",
         now,
         debtRow.id
@@ -982,8 +982,8 @@ export async function cancelDebt(
   const db = customDb ?? (await getDatabase());
   const now = Date.now();
 
-  await runExclusiveTransaction(db, async () => {
-    const debt = await db.getFirstAsync<{
+  await runExclusiveTransaction(db, async (txn) => {
+    const debt = await txn.getFirstAsync<{
       id: string;
       opening_mode: DebtOpeningMode;
       archived_at: number | null;
@@ -1001,7 +1001,7 @@ export async function cancelDebt(
       throw new Error('Cannot cancel an archived debt. Restore the debt from archive first.');
     }
 
-    const txCounts = await db.getFirstAsync<{ repayments: number; adjustments: number }>(
+    const txCounts = await txn.getFirstAsync<{ repayments: number; adjustments: number }>(
       `SELECT
          COUNT(CASE WHEN role = 'repayment' AND deleted_at IS NULL THEN 1 END) AS repayments,
          COUNT(CASE WHEN role IN ('adjustment_increase', 'adjustment_decrease') AND deleted_at IS NULL THEN 1 END) AS adjustments
@@ -1019,7 +1019,7 @@ export async function cancelDebt(
     }
 
     // 1. Soft-delete the debt record
-    await db.runAsync(
+    await txn.runAsync(
       'UPDATE debts SET deleted_at = ?, updated_at = ? WHERE id = ?;',
       now,
       now,
@@ -1028,13 +1028,13 @@ export async function cancelDebt(
 
     // 2. If new_with_cash, atomically soft-delete disbursement and linked cash transaction
     if (debt.opening_mode === 'new_with_cash') {
-      const disbursements = await db.getAllAsync<{ id: string; transaction_id: string | null }>(
+      const disbursements = await txn.getAllAsync<{ id: string; transaction_id: string | null }>(
         "SELECT id, transaction_id FROM debt_transactions WHERE debt_id = ? AND role = 'disbursement' AND deleted_at IS NULL;",
         id
       );
 
       for (const dtx of disbursements) {
-        await db.runAsync(
+        await txn.runAsync(
           'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
           now,
           now,
@@ -1042,7 +1042,7 @@ export async function cancelDebt(
         );
 
         if (dtx.transaction_id) {
-          await db.runAsync(
+          await txn.runAsync(
             'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL;',
             now,
             now,
@@ -1064,8 +1064,8 @@ export async function restoreCancelledDebt(
   const db = customDb ?? (await getDatabase());
   const now = Date.now();
 
-  await runExclusiveTransaction(db, async () => {
-    const debt = await db.getFirstAsync<{
+  await runExclusiveTransaction(db, async (txn) => {
+    const debt = await txn.getFirstAsync<{
       id: string;
       opening_mode: DebtOpeningMode;
       deleted_at: number | null;
@@ -1079,7 +1079,7 @@ export async function restoreCancelledDebt(
     }
 
     // 1. Restore the debt record
-    await db.runAsync(
+    await txn.runAsync(
       'UPDATE debts SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
       now,
       id
@@ -1087,20 +1087,20 @@ export async function restoreCancelledDebt(
 
     // 2. If new_with_cash, restore disbursement and linked cash transaction
     if (debt.opening_mode === 'new_with_cash') {
-      const disbursements = await db.getAllAsync<{ id: string; transaction_id: string | null }>(
+      const disbursements = await txn.getAllAsync<{ id: string; transaction_id: string | null }>(
         "SELECT id, transaction_id FROM debt_transactions WHERE debt_id = ? AND role = 'disbursement' AND deleted_at IS NOT NULL;",
         id
       );
 
       for (const dtx of disbursements) {
-        await db.runAsync(
+        await txn.runAsync(
           'UPDATE debt_transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
           now,
           dtx.id
         );
 
         if (dtx.transaction_id) {
-          await db.runAsync(
+          await txn.runAsync(
             'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL;',
             now,
             dtx.transaction_id

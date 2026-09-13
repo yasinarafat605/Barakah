@@ -334,7 +334,7 @@ export async function reorderCategories(
   const db = customDb ?? (await getDatabase());
   const now = Date.now();
 
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     for (let i = 0; i < orderedIdsOrItems.length; i++) {
       const item = orderedIdsOrItems[i];
       const id = typeof item === 'string' ? item : item.id;
@@ -342,7 +342,7 @@ export async function reorderCategories(
         typeof item === 'object' && typeof item.sortOrder === 'number'
           ? item.sortOrder
           : (i + 1) * 10;
-      await db.runAsync(
+      await txn.runAsync(
         'UPDATE categories SET sort_order = ?, updated_at = ? WHERE id = ?;',
         order,
         now,

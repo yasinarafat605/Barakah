@@ -10,11 +10,11 @@ describe('Migration 005: Backup Metadata and Checksums', () => {
     const db = createBetterSqliteConnection();
     const result = await runMigrations(db);
 
-    expect(result.applied).toBe(5);
-    expect(result.versions).toEqual([1, 2, 3, 4, 5]);
+    expect(result.applied).toBeGreaterThanOrEqual(5);
+    expect(result.versions.slice(0, 5)).toEqual([1, 2, 3, 4, 5]);
 
     const applied = await getAppliedMigrations(db);
-    expect(applied).toHaveLength(5);
+    expect(applied.length).toBeGreaterThanOrEqual(5);
 
     // Verify schema_migrations has checksum column
     const schemaCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(schema_migrations);');
@@ -23,7 +23,7 @@ describe('Migration 005: Backup Metadata and Checksums', () => {
     const rowsWithChecksum = await db.getAllAsync<{ version: number; checksum: string | null }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
     );
-    expect(rowsWithChecksum).toHaveLength(5);
+    expect(rowsWithChecksum.length).toBeGreaterThanOrEqual(5);
     for (const r of rowsWithChecksum) {
       expect(r.checksum).toBeTruthy();
       expect(r.checksum).toHaveLength(64);
@@ -71,8 +71,8 @@ describe('Migration 005: Backup Metadata and Checksums', () => {
 
     // 3. Run migration 005 via runner
     const result = await runMigrations(db);
-    expect(result.applied).toBe(1);
-    expect(result.versions).toEqual([5]);
+    expect(result.applied).toBeGreaterThanOrEqual(1);
+    expect(result.versions).toContain(5);
 
     // 4. Verify existing data preserved
     const account = await db.getFirstAsync<{ name: string; initial_balance: number }>(
@@ -85,7 +85,7 @@ describe('Migration 005: Backup Metadata and Checksums', () => {
     const rows = await db.getAllAsync<{ version: number; checksum: string | null }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
     );
-    expect(rows).toHaveLength(5);
+    expect(rows.length).toBeGreaterThanOrEqual(5);
     for (const r of rows) {
       expect(r.checksum).toBeTruthy();
     }

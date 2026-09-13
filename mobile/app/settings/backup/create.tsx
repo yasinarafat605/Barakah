@@ -55,7 +55,10 @@ export default function CreateBackupScreen() {
     return 'weak';
   }, [passphrase]);
 
+  const isWeb = Platform.OS === 'web';
+
   const canExport =
+    !isWeb &&
     passphrase.length >= MIN_PASSPHRASE_LENGTH &&
     passphrase === confirmPassphrase &&
     acknowledged &&
@@ -84,7 +87,8 @@ export default function CreateBackupScreen() {
   const handleShare = async () => {
     if (!backupResult?.filePath) return;
     try {
-      await shareBackupFile(backupResult.filePath);
+      const db = await getDatabase();
+      await shareBackupFile(db, backupResult.historyId, backupResult.filePath);
     } catch {
       // User cancellation handled quietly
     }
@@ -100,7 +104,7 @@ export default function CreateBackupScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
             accessibilityRole="button"
-            accessibilityLabel="Back">
+            accessibilityLabel={t('actions.back')}>
             <Ionicons name="arrow-back" size={24} color={theme.text} />
           </TouchableOpacity>
           <Text style={[styles.headerTitle, { color: theme.text }]}>

@@ -8,7 +8,13 @@ import { migration001 } from './migrations/001_initial_schema';
 import { migration002 } from './migrations/002_categories_and_transfers';
 import { migration003 } from './migrations/003_debts_and_counterparties';
 import { migration004 } from './migrations/004_debt_ledger_integrity_upgrade';
-import { migration005, MIGRATION_CHECKSUMS } from './migrations/005_backup_metadata_and_checksums';
+import { migration005 } from './migrations/005_backup_metadata_and_checksums';
+import {
+  migration006,
+  CANONICAL_MIGRATION_CHECKSUMS,
+} from './migrations/006_backup_integrity_hardening';
+import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { runExclusiveTransaction } from './client';
 import { createPreMigrationSafetySnapshot } from '../services/backup/safety';
 
@@ -18,6 +24,7 @@ export const MIGRATIONS: Migration[] = [
   migration003,
   migration004,
   migration005,
+  migration006,
 ];
 
 export interface MigrationResult {
@@ -35,48 +42,77 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
     );
   `);
 
+  // Ensure checksum column exists if on schema 5+
+  try {
+    const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(schema_migrations);');
+    if (!cols.some((c) => c.name === 'checksum')) {
+      await db.execAsync('ALTER TABLE schema_migrations ADD COLUMN checksum TEXT;');
+    }
+  } catch {
+    // Column check fallback
+  }
+
   // Fetch currently applied migrations
-  const appliedRows = await db.getAllAsync<{ version: number }>(
-    'SELECT version FROM schema_migrations ORDER BY version ASC;'
+  const appliedRows = await db.getAllAsync<{ version: number; checksum?: string | null }>(
+    'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
   );
   const appliedSet = new Set(appliedRows.map((r) => r.version));
+
+  // If Migration 006 was already applied, verify all existing checksums on startup
+  if (appliedSet.has(6)) {
+    for (const r of appliedRows) {
+      const expected = CANONICAL_MIGRATION_CHECKSUMS[r.version];
+      if (expected && r.checksum && r.checksum !== expected) {
+        throw new Error(
+          `MIGRATION_ERR_CHECKSUM_MISMATCH: Applied migration ${r.version} checksum mismatch. Expected ${expected}, got ${r.checksum}`
+        );
+      }
+    }
+  }
 
   const newlyApplied: number[] = [];
   const pending = MIGRATIONS.filter((m) => !appliedSet.has(m.version)).sort((a, b) => a.version - b.version);
 
-  // If there is existing data and pending migrations, create a pre-migration safety snapshot first
-  if (pending.length > 0 && appliedRows.length > 0) {
+  // If there is existing data and pending migrations on a native filesystem, create a pre-migration safety snapshot first (fail closed)
+  if (
+    pending.length > 0 &&
+    appliedRows.length > 0 &&
+    Platform.OS !== 'web' &&
+    Boolean(FileSystem.documentDirectory)
+  ) {
     const latestApplied = Math.max(...appliedRows.map((r) => r.version));
     await createPreMigrationSafetySnapshot(db, latestApplied);
   }
 
   for (const migration of pending) {
-    await runExclusiveTransaction(db, async () => {
-      await migration.up(db);
-      await db.runAsync(
-        'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?);',
+    await runExclusiveTransaction(db, async (txn) => {
+      await migration.up(txn);
+      const cs = CANONICAL_MIGRATION_CHECKSUMS[migration.version] ?? null;
+      await txn.runAsync(
+        'INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?);',
         migration.version,
         migration.name,
-        Date.now()
+        Date.now(),
+        cs
       );
     });
     newlyApplied.push(migration.version);
   }
 
-  // Backfill checksums for newly applied migrations
-  try {
-    for (const version of newlyApplied) {
-      const cs = MIGRATION_CHECKSUMS[version];
-      if (cs) {
-        await db.runAsync(
-          "UPDATE schema_migrations SET checksum = ? WHERE version = ? AND (checksum IS NULL OR checksum = '');",
-          cs,
-          version
+  // Final post-migration verification if migration 006 is now applied
+  const finalApplied = await db.getAllAsync<{ version: number; checksum?: string | null }>(
+    'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
+  );
+  const finalSet = new Set(finalApplied.map((r) => r.version));
+  if (finalSet.has(6)) {
+    for (const r of finalApplied) {
+      const expected = CANONICAL_MIGRATION_CHECKSUMS[r.version];
+      if (expected && r.checksum !== expected) {
+        throw new Error(
+          `MIGRATION_ERR_CHECKSUM_MISMATCH: Migration ${r.version} checksum mismatch after applying migrations. Expected ${expected}, got ${r.checksum}`
         );
       }
     }
-  } catch {
-    // Ignore if column doesn't exist yet
   }
 
   return {
@@ -87,10 +123,10 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
 
 export async function getAppliedMigrations(
   db: DatabaseConnection
-): Promise<{ version: number; name: string; applied_at: number }[]> {
+): Promise<{ version: number; name: string; applied_at: number; checksum?: string | null }[]> {
   try {
-    return await db.getAllAsync<{ version: number; name: string; applied_at: number }>(
-      'SELECT version, name, applied_at FROM schema_migrations ORDER BY version ASC;'
+    return await db.getAllAsync<{ version: number; name: string; applied_at: number; checksum?: string | null }>(
+      'SELECT version, name, applied_at, checksum FROM schema_migrations ORDER BY version ASC;'
     );
   } catch {
     return [];

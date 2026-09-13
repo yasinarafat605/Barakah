@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ScrollView, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
@@ -19,6 +19,8 @@ export default function RecoveryHubScreen() {
 
   const [lastBackup, setLastBackup] = useState<BackupHistoryRow | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  const isWeb = Platform.OS === 'web';
 
   const loadBackupStatus = useCallback(async () => {
     try {
@@ -57,7 +59,7 @@ export default function RecoveryHubScreen() {
           onPress={() => router.back()}
           style={styles.backButton}
           accessibilityRole="button"
-          accessibilityLabel="Back">
+          accessibilityLabel={t('actions.back')}>
           <Ionicons name="arrow-back" size={24} color={theme.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: theme.text }]}>{t('backup.title')}</Text>
@@ -67,6 +69,18 @@ export default function RecoveryHubScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}>
+
+        {/* Web Unsupported Notice */}
+        {isWeb && (
+          <View style={[styles.noticeCard, { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' }]}>
+            <View style={styles.noticeHeader}>
+              <Ionicons name="alert-circle-outline" size={20} color="#B45309" />
+              <Text style={[styles.noticeTitle, { color: '#B45309' }]}>
+                {t('backup.webUnsupported')}
+              </Text>
+            </View>
+          </View>
+        )}
         
         {/* Status Card */}
         <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
@@ -98,7 +112,8 @@ export default function RecoveryHubScreen() {
         <View style={styles.actionsContainer}>
           <TouchableOpacity
             onPress={() => router.push('/settings/backup/create' as any)}
-            style={[styles.actionButton, { backgroundColor: theme.primary }]}
+            disabled={isWeb}
+            style={[styles.actionButton, { backgroundColor: theme.primary, opacity: isWeb ? 0.5 : 1 }]}
             accessibilityRole="button"
             accessibilityLabel={t('backup.createBackup')}>
             <Ionicons name="lock-closed-outline" size={20} color="#FFFFFF" />
@@ -107,7 +122,8 @@ export default function RecoveryHubScreen() {
 
           <TouchableOpacity
             onPress={() => router.push('/settings/restore' as any)}
-            style={[styles.actionButtonSecondary, { backgroundColor: theme.surface, borderColor: theme.border }]}
+            disabled={isWeb}
+            style={[styles.actionButtonSecondary, { backgroundColor: theme.surface, borderColor: theme.border, opacity: isWeb ? 0.5 : 1 }]}
             accessibilityRole="button"
             accessibilityLabel={t('backup.restoreBackup')}>
             <Ionicons name="refresh-outline" size={20} color={theme.primary} />
@@ -118,7 +134,8 @@ export default function RecoveryHubScreen() {
 
           <TouchableOpacity
             onPress={() => router.push('/settings/backup/verify' as any)}
-            style={[styles.actionButtonSecondary, { backgroundColor: theme.surface, borderColor: theme.border }]}
+            disabled={isWeb}
+            style={[styles.actionButtonSecondary, { backgroundColor: theme.surface, borderColor: theme.border, opacity: isWeb ? 0.5 : 1 }]}
             accessibilityRole="button"
             accessibilityLabel={t('backup.verifyBackup')}>
             <Ionicons name="checkmark-circle-outline" size={20} color={theme.primary} />

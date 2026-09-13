@@ -213,9 +213,9 @@ export async function createTransfer(
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
   const note = input.note?.trim() || null;
 
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     // 1. Insert source debit entry
-    await db.runAsync(
+    await txn.runAsync(
       `INSERT INTO transactions (
          id, account_id, category_id, amount, type, transfer_id, transfer_role,
          related_account_id, note, timestamp, created_at, updated_at, deleted_at
@@ -232,7 +232,7 @@ export async function createTransfer(
     );
 
     // 2. Insert destination credit entry
-    await db.runAsync(
+    await txn.runAsync(
       `INSERT INTO transactions (
          id, account_id, category_id, amount, type, transfer_id, transfer_role,
          related_account_id, note, timestamp, created_at, updated_at, deleted_at
@@ -483,9 +483,9 @@ export async function softDeleteTransaction(
   }
 
   let changes = 0;
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     // Check if linked to a debt_transaction
-    const dtx = await db.getFirstAsync<{
+    const dtx = await txn.getFirstAsync<{
       id: string;
       debt_id: string;
       role: string;
@@ -504,7 +504,7 @@ export async function softDeleteTransaction(
       } else if (dtx.role === 'repayment') {
         if (dtx.deleted_at === null) {
           // Check if parent debt is archived
-          const parentDebt = await db.getFirstAsync<{ id: string; archived_at: number | null }>(
+          const parentDebt = await txn.getFirstAsync<{ id: string; archived_at: number | null }>(
             'SELECT id, archived_at FROM debts WHERE id = ?;',
             dtx.debt_id
           );
@@ -513,7 +513,7 @@ export async function softDeleteTransaction(
           }
 
           // Soft-delete linked debt transaction
-          await db.runAsync(
+          await txn.runAsync(
             'UPDATE debt_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?;',
             now,
             now,
@@ -521,7 +521,7 @@ export async function softDeleteTransaction(
           );
 
           // Recalibrate parent debt outstanding balance and reopen if settled
-          const debtRow = await db.getFirstAsync<{
+          const debtRow = await txn.getFirstAsync<{
             status: string;
             original_principal: number;
             total_repaid: number;
@@ -547,7 +547,7 @@ export async function softDeleteTransaction(
           if (debtRow && debtRow.status === 'settled') {
             const outstanding = debtRow.original_principal - debtRow.total_repaid;
             if (outstanding > 0) {
-              await db.runAsync(
+              await txn.runAsync(
                 "UPDATE debts SET status = 'active', updated_at = ? WHERE id = ?;",
                 now,
                 dtx.debt_id
@@ -560,7 +560,7 @@ export async function softDeleteTransaction(
 
     if (existing.transfer_id) {
       // Soft-delete BOTH legs of the transfer atomically (ADR-005)
-      const res = await db.runAsync(
+      const res = await txn.runAsync(
         'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE transfer_id = ? AND deleted_at IS NULL;',
         now,
         now,
@@ -568,7 +568,7 @@ export async function softDeleteTransaction(
       );
       changes = res.changes;
     } else {
-      const res = await db.runAsync(
+      const res = await txn.runAsync(
         'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL;',
         now,
         now,
@@ -604,9 +604,9 @@ export async function restoreTransaction(
   }
 
   let changes = 0;
-  await runExclusiveTransaction(db, async () => {
+  await runExclusiveTransaction(db, async (txn) => {
     // Check if linked to a debt_transaction
-    const dtx = await db.getFirstAsync<{
+    const dtx = await txn.getFirstAsync<{
       id: string;
       debt_id: string;
       role: string;
@@ -625,7 +625,7 @@ export async function restoreTransaction(
       } else if (dtx.role === 'repayment') {
         if (dtx.deleted_at !== null) {
           // Check if parent debt is archived
-          const parentDebt = await db.getFirstAsync<{ id: string; archived_at: number | null }>(
+          const parentDebt = await txn.getFirstAsync<{ id: string; archived_at: number | null }>(
             'SELECT id, archived_at FROM debts WHERE id = ?;',
             dtx.debt_id
           );
@@ -633,7 +633,7 @@ export async function restoreTransaction(
             throw new Error('Cannot restore repayment belonging to an archived debt. Restore the debt from archive first.');
           }
           // Check if restoring this repayment would exceed outstanding principal
-          const debtRow = await db.getFirstAsync<{
+          const debtRow = await txn.getFirstAsync<{
             status: string;
             original_principal: number;
             total_repaid: number;
@@ -665,14 +665,14 @@ export async function restoreTransaction(
             }
 
             // Restore linked debt transaction
-            await db.runAsync(
+            await txn.runAsync(
               'UPDATE debt_transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?;',
               now,
               dtx.id
             );
 
             if (newOutstanding === 0) {
-              await db.runAsync(
+              await txn.runAsync(
                 "UPDATE debts SET status = 'settled', updated_at = ? WHERE id = ?;",
                 now,
                 dtx.debt_id
@@ -684,14 +684,14 @@ export async function restoreTransaction(
     }
 
     if (existing.transfer_id) {
-      const res = await db.runAsync(
+      const res = await txn.runAsync(
         'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE transfer_id = ? AND deleted_at IS NOT NULL;',
         now,
         existing.transfer_id
       );
       changes = res.changes;
     } else {
-      const res = await db.runAsync(
+      const res = await txn.runAsync(
         'UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL;',
         now,
         id

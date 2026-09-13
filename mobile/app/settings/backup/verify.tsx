@@ -22,7 +22,8 @@ import {
   verifyAndPreviewBackup,
   DecryptedBackupContext,
 } from '@/src/services/backup/restore-service';
-import { RestoreError } from '@/src/services/backup/types';
+import { RestoreError, MAX_BACKUP_FILE_SIZE_BYTES } from '@/src/services/backup/types';
+import { base64ToUint8Array } from '@/src/services/backup/safety';
 
 export default function VerifyBackupScreen() {
   const router = useRouter();
@@ -33,9 +34,9 @@ export default function VerifyBackupScreen() {
   const [selectedFile, setSelectedFile] = useState<{ name: string; bytes: Uint8Array } | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const [showPassphrase, setShowPassphrase] = useState(false);
+  const [verificationResult, setVerificationResult] = useState<DecryptedBackupContext | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
-  const [verificationResult, setVerificationResult] = useState<DecryptedBackupContext | null>(null);
 
   const handlePickFile = async () => {
     setErrorKey(null);
@@ -52,16 +53,23 @@ export default function VerifyBackupScreen() {
       }
 
       const asset = result.assets[0];
+
+      if (asset.size && asset.size > MAX_BACKUP_FILE_SIZE_BYTES) {
+        setErrorKey('RESTORE_ERR_FILE_TOO_LARGE');
+        return;
+      }
+
+      const fileInfo = await FileSystem.getInfoAsync(asset.uri);
+      if (fileInfo.exists && fileInfo.size && fileInfo.size > MAX_BACKUP_FILE_SIZE_BYTES) {
+        setErrorKey('RESTORE_ERR_FILE_TOO_LARGE');
+        return;
+      }
+
       const base64 = await FileSystem.readAsStringAsync(asset.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      const binaryStr = atob(base64);
-      const len = binaryStr.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
+      const bytes = base64ToUint8Array(base64);
 
       setSelectedFile({
         name: asset.name,
@@ -109,7 +117,7 @@ export default function VerifyBackupScreen() {
           onPress={() => router.back()}
           style={styles.backButton}
           accessibilityRole="button"
-          accessibilityLabel="Back">
+          accessibilityLabel={t('actions.back')}>
           <Ionicons name="arrow-back" size={24} color={theme.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: theme.text }]}>

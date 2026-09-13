@@ -8,8 +8,13 @@
  * - Strict civil date validation without rollover (ADR-013)
  * - Foreign-key and cross-table referential integrity
  * - Transfer pair synchronization and parity (ADR-005)
- * - Debt ledger non-negative principal invariant
- * - Zero silent repairs: any single violation aborts the restore (ADR-016)
+ * - Same-currency transfer account validation and exact timestamp equality
+ * - Debt lifecycle status validation against derived balance (outstanding >= 0)
+ * - Debt transaction link amount, currency, account, and direction semantics
+ * - Rejection of active debt repayments linked to soft-deleted transactions
+ * - Rejection of duplicate transaction links (even across soft-deleted debt transactions)
+ * - Migration ledger uniqueness and canonical checksum enforcement
+ * - Zero silent repairs: never trim or normalize stored data (ADR-016)
  */
 
 import {
@@ -26,10 +31,11 @@ import {
   RestoreError,
 } from './types';
 import { isValidCivilDate } from '../../db/migrations/004_debt_ledger_integrity_upgrade';
+import { CANONICAL_MIGRATION_CHECKSUMS } from '../../db/migrations/006_backup_integrity_hardening';
 
-// ID validator: non-empty string, reasonable length (e.g. 1 to 128 characters)
+// ID validator: non-empty string, reasonable length (1 to 128 characters)
 function isValidId(id: unknown): id is string {
-  return typeof id === 'string' && id.trim().length > 0 && id.length <= 128;
+  return typeof id === 'string' && id.length > 0 && id.length <= 128;
 }
 
 // Positive safe integer validator (> 0)
@@ -58,7 +64,7 @@ function isValidTimestamp(val: unknown): val is number {
 }
 
 /**
- * Validates an AccountRow
+ * Validates an AccountRow without modifying strings.
  */
 export function validateAccountRow(row: unknown, index: number): AccountRow {
   if (!row || typeof row !== 'object') {
@@ -69,7 +75,7 @@ export function validateAccountRow(row: unknown, index: number): AccountRow {
   if (!isValidId(a.id)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Account at index ${index} has invalid id: ${String(a.id)}`);
   }
-  if (typeof a.name !== 'string' || a.name.trim().length === 0 || a.name.length > 256) {
+  if (typeof a.name !== 'string' || a.name.length === 0 || a.name.length > 256) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Account ${a.id} has invalid name.`);
   }
   const validTypes = ['cash', 'bank', 'mobile_wallet', 'savings', 'business', 'custom'];
@@ -91,7 +97,7 @@ export function validateAccountRow(row: unknown, index: number): AccountRow {
 
   return {
     id: a.id,
-    name: a.name.trim(),
+    name: a.name,
     type: a.type as AccountRow['type'],
     initial_balance: a.initial_balance,
     currency: a.currency,
@@ -101,7 +107,7 @@ export function validateAccountRow(row: unknown, index: number): AccountRow {
 }
 
 /**
- * Validates a CategoryRow
+ * Validates a CategoryRow without modifying strings.
  */
 export function validateCategoryRow(row: unknown, index: number): CategoryRow {
   if (!row || typeof row !== 'object') {
@@ -112,7 +118,7 @@ export function validateCategoryRow(row: unknown, index: number): CategoryRow {
   if (!isValidId(c.id)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Category at index ${index} has invalid id.`);
   }
-  if (typeof c.name_key !== 'string' || c.name_key.trim().length === 0) {
+  if (typeof c.name_key !== 'string' || c.name_key.length === 0) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Category ${c.id} has invalid name_key.`);
   }
   if (c.name_custom !== null && c.name_custom !== undefined && typeof c.name_custom !== 'string') {
@@ -145,10 +151,10 @@ export function validateCategoryRow(row: unknown, index: number): CategoryRow {
 
   return {
     id: c.id,
-    name_key: c.name_key.trim(),
-    name_custom: typeof c.name_custom === 'string' ? c.name_custom.trim() : null,
-    icon: typeof c.icon === 'string' ? c.icon.trim() : null,
-    color: typeof c.color === 'string' ? c.color.trim() : null,
+    name_key: c.name_key,
+    name_custom: typeof c.name_custom === 'string' ? c.name_custom : null,
+    icon: typeof c.icon === 'string' ? c.icon : null,
+    color: typeof c.color === 'string' ? c.color : null,
     type: c.type,
     is_archived: c.is_archived,
     sort_order: c.sort_order,
@@ -159,7 +165,7 @@ export function validateCategoryRow(row: unknown, index: number): CategoryRow {
 }
 
 /**
- * Validates a TransactionRow
+ * Validates a TransactionRow without modifying strings.
  */
 export function validateTransactionRow(row: unknown, index: number): TransactionRow {
   if (!row || typeof row !== 'object') {
@@ -247,7 +253,7 @@ export function validateTransactionRow(row: unknown, index: number): Transaction
 }
 
 /**
- * Validates a CounterpartyRow
+ * Validates a CounterpartyRow without modifying strings.
  */
 export function validateCounterpartyRow(row: unknown, index: number): CounterpartyRow {
   if (!row || typeof row !== 'object') {
@@ -258,7 +264,7 @@ export function validateCounterpartyRow(row: unknown, index: number): Counterpar
   if (!isValidId(cp.id)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Counterparty at index ${index} has invalid id.`);
   }
-  if (typeof cp.name !== 'string' || cp.name.trim().length === 0 || cp.name.length > 256) {
+  if (typeof cp.name !== 'string' || cp.name.length === 0 || cp.name.length > 256) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Counterparty ${cp.id} has invalid name.`);
   }
   const validTypes = ['person', 'business', 'organisation', 'other'];
@@ -289,10 +295,10 @@ export function validateCounterpartyRow(row: unknown, index: number): Counterpar
 
   return {
     id: cp.id,
-    name: cp.name.trim(),
+    name: cp.name,
     type: cp.type as CounterpartyRow['type'],
-    phone: typeof cp.phone === 'string' ? cp.phone.trim() : null,
-    email: typeof cp.email === 'string' ? cp.email.trim() : null,
+    phone: typeof cp.phone === 'string' ? cp.phone : null,
+    email: typeof cp.email === 'string' ? cp.email : null,
     note: typeof cp.note === 'string' ? cp.note : null,
     avatar_color: typeof cp.avatar_color === 'string' ? cp.avatar_color : null,
     is_archived: cp.is_archived,
@@ -302,7 +308,7 @@ export function validateCounterpartyRow(row: unknown, index: number): Counterpar
 }
 
 /**
- * Validates a DebtRow
+ * Validates a DebtRow without modifying strings.
  */
 export function validateDebtRow(row: unknown, index: number): DebtRow {
   if (!row || typeof row !== 'object') {
@@ -374,7 +380,7 @@ export function validateDebtRow(row: unknown, index: number): DebtRow {
 }
 
 /**
- * Validates a DebtTransactionRow
+ * Validates a DebtTransactionRow without modifying strings.
  */
 export function validateDebtTransactionRow(row: unknown, index: number): DebtTransactionRow {
   if (!row || typeof row !== 'object') {
@@ -440,7 +446,7 @@ export function validateDebtTransactionRow(row: unknown, index: number): DebtTra
 }
 
 /**
- * Validates a SchemaMigrationRow
+ * Validates a SchemaMigrationRow without modifying strings.
  */
 export function validateSchemaMigrationRow(row: unknown, index: number): SchemaMigrationRow {
   if (!row || typeof row !== 'object') {
@@ -451,7 +457,7 @@ export function validateSchemaMigrationRow(row: unknown, index: number): SchemaM
   if (!isPositiveSafeInteger(m.version)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Migration record at index ${index} has invalid version.`);
   }
-  if (typeof m.name !== 'string' || m.name.trim().length === 0) {
+  if (typeof m.name !== 'string' || m.name.length === 0) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Migration ${m.version} has invalid name.`);
   }
   if (!isValidTimestamp(m.applied_at)) {
@@ -463,9 +469,9 @@ export function validateSchemaMigrationRow(row: unknown, index: number): SchemaM
 
   return {
     version: m.version,
-    name: m.name.trim(),
+    name: m.name,
     applied_at: m.applied_at,
-    checksum: typeof m.checksum === 'string' ? m.checksum.trim() : null,
+    checksum: typeof m.checksum === 'string' ? m.checksum : null,
   };
 }
 
@@ -474,12 +480,12 @@ export function validateSchemaMigrationRow(row: unknown, index: number): SchemaM
  */
 export function validatePayloadInvariants(data: BackupPayloadData): void {
   // 1. Uniqueness of Primary Keys
-  const accountIds = new Set<string>();
+  const accountsById = new Map<string, AccountRow>();
   for (const a of data.accounts) {
-    if (accountIds.has(a.id)) {
+    if (accountsById.has(a.id)) {
       throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate account ID: ${a.id}`);
     }
-    accountIds.add(a.id);
+    accountsById.set(a.id, a);
   }
 
   const categoryIds = new Set<string>();
@@ -498,34 +504,34 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
     counterpartyIds.add(cp.id);
   }
 
-  const debtIds = new Set<string>();
+  const debtsById = new Map<string, DebtRow>();
   for (const d of data.debts) {
-    if (debtIds.has(d.id)) {
+    if (debtsById.has(d.id)) {
       throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate debt ID: ${d.id}`);
     }
-    debtIds.add(d.id);
+    debtsById.set(d.id, d);
     if (!counterpartyIds.has(d.counterparty_id)) {
       throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Debt ${d.id} references non-existent counterparty ${d.counterparty_id}`);
     }
   }
 
-  const transactionIds = new Set<string>();
+  const transactionsById = new Map<string, TransactionRow>();
   const transfersByTransferId = new Map<string, TransactionRow[]>();
 
   for (const tx of data.transactions) {
-    if (transactionIds.has(tx.id)) {
+    if (transactionsById.has(tx.id)) {
       throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate transaction ID: ${tx.id}`);
     }
-    transactionIds.add(tx.id);
+    transactionsById.set(tx.id, tx);
 
     // FK checks
-    if (!accountIds.has(tx.account_id)) {
+    if (!accountsById.has(tx.account_id)) {
       throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Transaction ${tx.id} references non-existent account ${tx.account_id}`);
     }
     if (tx.category_id && !categoryIds.has(tx.category_id)) {
       throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Transaction ${tx.id} references non-existent category ${tx.category_id}`);
     }
-    if (tx.related_account_id && !accountIds.has(tx.related_account_id)) {
+    if (tx.related_account_id && !accountsById.has(tx.related_account_id)) {
       throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Transaction ${tx.id} references non-existent related_account ${tx.related_account_id}`);
     }
 
@@ -536,7 +542,7 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
     }
   }
 
-  // 2. Transfer Pair Integrity
+  // 2. Transfer Pair Integrity, Timestamp Equality & Same-Currency Accounts
   for (const [transferId, pair] of transfersByTransferId.entries()) {
     if (pair.length !== 2) {
       throw new RestoreError(
@@ -557,10 +563,24 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
         `Transfer ${transferId} amounts do not match: ${t1.amount} !== ${t2.amount}`
       );
     }
+    if (t1.timestamp !== t2.timestamp) {
+      throw new RestoreError(
+        'RESTORE_ERR_INVARIANT_FAILED',
+        `Transfer ${transferId} timestamps do not match: ${t1.timestamp} !== ${t2.timestamp}`
+      );
+    }
     if (t1.account_id !== t2.related_account_id || t2.account_id !== t1.related_account_id) {
       throw new RestoreError(
         'RESTORE_ERR_INVARIANT_FAILED',
         `Transfer ${transferId} cross-account references do not match.`
+      );
+    }
+    const acc1 = accountsById.get(t1.account_id);
+    const acc2 = accountsById.get(t2.account_id);
+    if (!acc1 || !acc2 || acc1.currency !== acc2.currency) {
+      throw new RestoreError(
+        'RESTORE_ERR_INVARIANT_FAILED',
+        `Transfer ${transferId} accounts have mismatched currencies (${acc1?.currency} !== ${acc2?.currency}).`
       );
     }
     // Synchronized soft deletion
@@ -574,9 +594,9 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
     }
   }
 
-  // 3. Debt Ledger Integrity & Non-Negative Principal
+  // 3. Debt Ledger Integrity, Link Semantics, and Non-Negative Principal
   const debtTxIds = new Set<string>();
-  const linkedTxIds = new Set<string>();
+  const allLinkedTxIds = new Set<string>();
   const movementsByDebt = new Map<string, DebtTransactionRow[]>();
 
   for (const dt of data.debt_transactions) {
@@ -585,19 +605,78 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
     }
     debtTxIds.add(dt.id);
 
-    if (!debtIds.has(dt.debt_id)) {
+    const debt = debtsById.get(dt.debt_id);
+    if (!debt) {
       throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Debt transaction ${dt.id} references non-existent debt ${dt.debt_id}`);
     }
 
     if (dt.transaction_id) {
-      if (!transactionIds.has(dt.transaction_id)) {
+      const linkedTx = transactionsById.get(dt.transaction_id);
+      if (!linkedTx) {
         throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Debt transaction ${dt.id} references non-existent transaction ${dt.transaction_id}`);
       }
-      if (dt.deleted_at === null) {
-        if (linkedTxIds.has(dt.transaction_id)) {
-          throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Duplicate active link to transaction ${dt.transaction_id}`);
+
+      // Rejection of duplicate links (database unique index uq_debt_tx_transaction_id applies even to soft-deleted records)
+      if (allLinkedTxIds.has(dt.transaction_id)) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Duplicate transaction link to ${dt.transaction_id} violates unique index uq_debt_tx_transaction_id.`
+        );
+      }
+      allLinkedTxIds.add(dt.transaction_id);
+
+      // Rejection of active debt movements linked to soft-deleted transactions
+      if (dt.deleted_at === null && linkedTx.deleted_at !== null) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Active debt transaction ${dt.id} references soft-deleted transaction ${dt.transaction_id}.`
+        );
+      }
+
+      // Debt-link amount semantics
+      if (dt.amount !== linkedTx.amount) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Debt transaction ${dt.id} amount (${dt.amount}) does not match linked transaction amount (${linkedTx.amount}).`
+        );
+      }
+
+      // Debt-link currency semantics
+      const linkedAccount = accountsById.get(linkedTx.account_id);
+      if (linkedAccount && linkedAccount.currency !== debt.currency) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Debt transaction ${dt.id} account currency (${linkedAccount.currency}) does not match debt currency (${debt.currency}).`
+        );
+      }
+
+      // Debt-link direction semantics
+      if (debt.direction === 'lent') {
+        if (dt.role === 'disbursement' && linkedTx.type !== 'expense') {
+          throw new RestoreError(
+            'RESTORE_ERR_INVARIANT_FAILED',
+            `Lent debt disbursement ${dt.id} must be an expense transaction, found ${linkedTx.type}.`
+          );
         }
-        linkedTxIds.add(dt.transaction_id);
+        if (dt.role === 'repayment' && linkedTx.type !== 'income') {
+          throw new RestoreError(
+            'RESTORE_ERR_INVARIANT_FAILED',
+            `Lent debt repayment ${dt.id} must be an income transaction, found ${linkedTx.type}.`
+          );
+        }
+      } else if (debt.direction === 'borrowed') {
+        if (dt.role === 'disbursement' && linkedTx.type !== 'income') {
+          throw new RestoreError(
+            'RESTORE_ERR_INVARIANT_FAILED',
+            `Borrowed debt disbursement ${dt.id} must be an income transaction, found ${linkedTx.type}.`
+          );
+        }
+        if (dt.role === 'repayment' && linkedTx.type !== 'expense') {
+          throw new RestoreError(
+            'RESTORE_ERR_INVARIANT_FAILED',
+            `Borrowed debt repayment ${dt.id} must be an expense transaction, found ${linkedTx.type}.`
+          );
+        }
       }
     }
 
@@ -606,15 +685,17 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
     movementsByDebt.set(dt.debt_id, list);
   }
 
-  // Check each debt's outstanding balance
+  // Check each debt's derived balance and lifecycle status
   for (const debt of data.debts) {
-    if (debt.deleted_at !== null) continue; // Skip soft-deleted debts from active balance invariant
-
     const movements = movementsByDebt.get(debt.id) ?? [];
     let outstanding = debt.original_principal;
 
     for (const m of movements) {
       if (m.deleted_at !== null) continue;
+      if (m.transaction_id) {
+        const tx = transactionsById.get(m.transaction_id);
+        if (tx && tx.deleted_at !== null) continue;
+      }
 
       if (m.role === 'repayment') {
         outstanding -= m.amount;
@@ -623,13 +704,45 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
       } else if (m.role === 'adjustment_decrease') {
         outstanding -= m.amount;
       }
-      // Note: opening_balance and disbursement mirror principal, not altering original_principal baseline
     }
 
     if (outstanding < 0) {
       throw new RestoreError(
         'RESTORE_ERR_INVARIANT_FAILED',
         `Debt ${debt.id} has negative outstanding balance (${outstanding}). Ledger corruption detected.`
+      );
+    }
+
+    // Lifecycle status consistency against derived balance
+    if (debt.deleted_at === null) {
+      if (debt.status === 'active' && outstanding === 0) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Debt ${debt.id} has status 'active' but derived balance is 0. Status must be 'settled'.`
+        );
+      }
+      if (debt.status === 'settled' && outstanding > 0) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Debt ${debt.id} has status 'settled' but derived balance is ${outstanding}. Status must be 'active'.`
+        );
+      }
+    }
+  }
+
+  // 4. Migration Ledger Uniqueness and Canonical Checksum Enforcement
+  const migrationVersions = new Set<number>();
+  for (const m of data.schema_migrations) {
+    if (migrationVersions.has(m.version)) {
+      throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate migration version in backup ledger: ${m.version}`);
+    }
+    migrationVersions.add(m.version);
+
+    const expectedChecksum = CANONICAL_MIGRATION_CHECKSUMS[m.version];
+    if (expectedChecksum && m.checksum && m.checksum !== expectedChecksum) {
+      throw new RestoreError(
+        'RESTORE_ERR_CHECKSUM_MISMATCH',
+        `Migration ${m.version} checksum in backup (${m.checksum}) does not match canonical checksum (${expectedChecksum}).`
       );
     }
   }

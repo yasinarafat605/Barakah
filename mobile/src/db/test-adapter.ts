@@ -11,7 +11,7 @@ export function createBetterSqliteConnection(filename: string = ':memory:'): Dat
   const Database = require('better-sqlite3');
   const db = new Database(filename);
 
-  return {
+  const connection: DatabaseConnection = {
     async execAsync(source: string): Promise<void> {
       db.exec(source);
     },
@@ -35,21 +35,23 @@ export function createBetterSqliteConnection(filename: string = ':memory:'): Dat
       const result = stmt.get(...flatParams) as T | undefined;
       return result ?? null;
     },
-    async withTransactionAsync(task: () => Promise<void>): Promise<void> {
+    async withTransactionAsync<T = void>(task: (txn: DatabaseConnection) => Promise<T>): Promise<T> {
       db.exec('BEGIN');
       try {
-        await task();
+        const result = await task(connection);
         db.exec('COMMIT');
+        return result;
       } catch (err) {
         db.exec('ROLLBACK');
         throw err;
       }
     },
-    async withExclusiveTransactionAsync(task: () => Promise<void>): Promise<void> {
+    async withExclusiveTransactionAsync<T = void>(task: (txn: DatabaseConnection) => Promise<T>): Promise<T> {
       db.exec('BEGIN EXCLUSIVE');
       try {
-        await task();
+        const result = await task(connection);
         db.exec('COMMIT');
+        return result;
       } catch (err) {
         db.exec('ROLLBACK');
         throw err;
@@ -59,4 +61,6 @@ export function createBetterSqliteConnection(filename: string = ':memory:'): Dat
       db.close();
     },
   };
+
+  return connection;
 }

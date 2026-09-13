@@ -7,6 +7,7 @@
  * - Pure mobile runtime: uses expo-sqlite exclusively
  */
 
+import { Platform } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import { DatabaseConnection } from './types';
 
@@ -55,16 +56,20 @@ export function setDatabase(db: DatabaseConnection | null): void {
 
 /**
  * Executes a task within an exclusive transaction if supported,
- * falling back to standard transaction.
+ * falling back to standard transaction on platforms like Web.
+ * The task callback receives the transaction connection object `txn`.
+ * Every query participating in the transaction MUST execute on `txn`.
  */
-export async function runExclusiveTransaction(
+export async function runExclusiveTransaction<T = void>(
   db: DatabaseConnection,
-  task: () => Promise<void>
-): Promise<void> {
-  if (typeof db.withExclusiveTransactionAsync === 'function') {
-    await db.withExclusiveTransactionAsync(task);
-  } else {
-    await db.withTransactionAsync(task);
+  task: (txn: DatabaseConnection) => Promise<T>
+): Promise<T> {
+  if (Platform.OS === 'web') {
+    return db.withTransactionAsync((txn) => task(txn || db));
   }
+  if (typeof db.withExclusiveTransactionAsync === 'function') {
+    return db.withExclusiveTransactionAsync((txn) => task((txn || db) as unknown as DatabaseConnection));
+  }
+  return db.withTransactionAsync((txn) => task(txn || db));
 }
 

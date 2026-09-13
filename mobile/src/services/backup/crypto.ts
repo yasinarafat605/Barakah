@@ -25,6 +25,11 @@ import {
   BackupHeader,
   RestoreError,
   MIN_PASSPHRASE_LENGTH,
+  MIN_RESTORABLE_SCHEMA_VERSION,
+  MAX_RESTORABLE_SCHEMA_VERSION,
+  CIPHER_ID_AES_256_GCM,
+  KDF_ID_SCRYPT,
+  FLAGS_RESERVED_MASK,
 } from './types';
 
 /**
@@ -114,7 +119,21 @@ export async function deriveKeyFromPassphrase(
 }
 
 /**
- * Serializes the 60-byte authenticated header.
+ * Serializes the exact 60-byte authenticated header.
+ * Byte Offsets:
+ *   0..3   (4 bytes):  Magic 'BMZ1' (0x42, 0x4D, 0x5A, 0x31)
+ *   4..5   (2 bytes):  Format Version uint16 (Big-Endian)
+ *   6..7   (2 bytes):  Schema Version uint16 (Big-Endian)
+ *   8..15  (8 bytes):  Created At Timestamp uint64 (Big-Endian ms)
+ *   16     (1 byte):   KDF ID uint8 (1 = Scrypt)
+ *   17..20 (4 bytes):  KDF N uint32 (Big-Endian)
+ *   21..24 (4 bytes):  KDF r uint32 (Big-Endian)
+ *   25..28 (4 bytes):  KDF p uint32 (Big-Endian)
+ *   29..44 (16 bytes): Salt (16 random bytes)
+ *   45     (1 byte):   Cipher ID uint8 (1 = AES-256-GCM)
+ *   46..57 (12 bytes): Nonce (12 random bytes)
+ *   58     (1 byte):   App Version uint8 (Major version)
+ *   59     (1 byte):   Flags uint8 (Bit 0 = DEFLATE, Bits 1..7 reserved = 0)
  */
 export function serializeHeader(
   params: Omit<BackupHeader, 'magic' | 'rawHeaderBytes'>
@@ -123,53 +142,53 @@ export function serializeHeader(
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
 
-  // 0..3: Magic 'BKBK'
-  bytes[0] = BACKUP_MAGIC_BYTES[0];
-  bytes[1] = BACKUP_MAGIC_BYTES[1];
-  bytes[2] = BACKUP_MAGIC_BYTES[2];
-  bytes[3] = BACKUP_MAGIC_BYTES[3];
+  // 0..3: Magic 'BMZ1'
+  bytes[0] = BACKUP_MAGIC_BYTES[0]; // 0x42
+  bytes[1] = BACKUP_MAGIC_BYTES[1]; // 0x4D
+  bytes[2] = BACKUP_MAGIC_BYTES[2]; // 0x5A
+  bytes[3] = BACKUP_MAGIC_BYTES[3]; // 0x31
 
-  // 4..5: Format Version (uint16)
+  // 4..5: Format Version (uint16 BE)
   view.setUint16(4, params.formatVersion, false);
 
-  // 6..7: KDF ID (uint16)
-  view.setUint16(6, params.kdfId, false);
+  // 6..7: Schema Version (uint16 BE)
+  view.setUint16(6, params.schemaVersion, false);
 
-  // 8..11: KDF N (uint32)
-  view.setUint32(8, params.kdfN, false);
+  // 8..15: Created At Timestamp (uint64 BE BigInt)
+  view.setBigUint64(8, BigInt(params.createdAtMs), false);
 
-  // 12..13: KDF r (uint16)
-  view.setUint16(12, params.kdfR, false);
+  // 16: KDF ID (uint8)
+  view.setUint8(16, params.kdfId);
 
-  // 14..15: KDF p (uint16)
-  view.setUint16(14, params.kdfP, false);
+  // 17..20: KDF N (uint32 BE)
+  view.setUint32(17, params.kdfN, false);
 
-  // 16..31: Salt (16 bytes)
+  // 21..24: KDF r (uint32 BE)
+  view.setUint32(21, params.kdfR, false);
+
+  // 25..28: KDF p (uint32 BE)
+  view.setUint32(25, params.kdfP, false);
+
+  // 29..44: Salt (16 bytes)
   if (params.salt.length !== SALT_SIZE_BYTES) {
     throw new Error(`Salt must be exactly ${SALT_SIZE_BYTES} bytes.`);
   }
-  bytes.set(params.salt, 16);
+  bytes.set(params.salt, 29);
 
-  // 32..33: Cipher ID (uint16)
-  view.setUint16(32, params.cipherId, false);
+  // 45: Cipher ID (uint8)
+  view.setUint8(45, params.cipherId);
 
-  // 34..45: Nonce (12 bytes)
+  // 46..57: Nonce (12 bytes)
   if (params.nonce.length !== NONCE_SIZE_BYTES) {
     throw new Error(`Nonce must be exactly ${NONCE_SIZE_BYTES} bytes.`);
   }
-  bytes.set(params.nonce, 34);
+  bytes.set(params.nonce, 46);
 
-  // 46..47: Schema Version (uint16)
-  view.setUint16(46, params.schemaVersion, false);
+  // 58: App Version (uint8)
+  view.setUint8(58, params.appVersion);
 
-  // 48..49: App Version (uint16)
-  view.setUint16(48, params.appVersion, false);
-
-  // 50..51: Flags (uint16)
-  view.setUint16(50, params.flags, false);
-
-  // 52..59: Created At Timestamp (uint64 BigInt)
-  view.setBigUint64(52, BigInt(params.createdAtMs), false);
+  // 59: Flags (uint8)
+  view.setUint8(59, params.flags);
 
   return bytes;
 }
@@ -192,7 +211,7 @@ export function parseHeader(headerBytes: Uint8Array): BackupHeader {
     rawHeaderBytes.byteLength
   );
 
-  // Validate Magic bytes 'BKBK'
+  // Validate Magic bytes 'BMZ1'
   if (
     rawHeaderBytes[0] !== BACKUP_MAGIC_BYTES[0] ||
     rawHeaderBytes[1] !== BACKUP_MAGIC_BYTES[1] ||
@@ -201,50 +220,83 @@ export function parseHeader(headerBytes: Uint8Array): BackupHeader {
   ) {
     throw new RestoreError(
       'RESTORE_ERR_INVALID_MAGIC',
-      'Unrecognised file format: invalid magic header.'
+      'Unrecognised file format: invalid magic header. Must begin with BMZ1.'
     );
   }
 
   const formatVersion = view.getUint16(4, false);
-  if (formatVersion > BACKUP_FORMAT_VERSION) {
+  if (formatVersion === 0 || formatVersion > BACKUP_FORMAT_VERSION) {
     throw new RestoreError(
       'RESTORE_ERR_UNSUPPORTED_VERSION',
-      `Backup format version ${formatVersion} is newer than supported version (${BACKUP_FORMAT_VERSION}).`
+      `Backup format version ${formatVersion} is not supported (current supported version is ${BACKUP_FORMAT_VERSION}).`
     );
   }
 
-  const kdfId = view.getUint16(6, false);
-  if (kdfId !== 1) {
+  const schemaVersion = view.getUint16(6, false);
+  if (
+    !Number.isSafeInteger(schemaVersion) ||
+    schemaVersion < MIN_RESTORABLE_SCHEMA_VERSION ||
+    schemaVersion > MAX_RESTORABLE_SCHEMA_VERSION
+  ) {
+    throw new RestoreError(
+      'RESTORE_ERR_UNSUPPORTED_SCHEMA_VERSION',
+      `Schema version ${schemaVersion} is outside supported range (${MIN_RESTORABLE_SCHEMA_VERSION}..${MAX_RESTORABLE_SCHEMA_VERSION}).`
+    );
+  }
+
+  const createdAtMs = Number(view.getBigUint64(8, false));
+  if (!Number.isSafeInteger(createdAtMs) || createdAtMs < 1577836800000 || createdAtMs > 4102444800000) {
+    throw new RestoreError(
+      'RESTORE_ERR_SCHEMA_VALIDATION',
+      'Invalid creation timestamp in backup header.'
+    );
+  }
+
+  const kdfId = view.getUint8(16);
+  if (kdfId !== KDF_ID_SCRYPT) {
     throw new RestoreError(
       'RESTORE_ERR_UNSUPPORTED_KDF',
-      `Unsupported KDF algorithm identifier: ${kdfId}`
+      `Unsupported KDF algorithm identifier: ${kdfId}. Expected Scrypt (1).`
     );
   }
 
-  const kdfN = view.getUint32(8, false);
-  const kdfR = view.getUint16(12, false);
-  const kdfP = view.getUint16(14, false);
+  const kdfN = view.getUint32(17, false);
+  const kdfR = view.getUint32(21, false);
+  const kdfP = view.getUint32(25, false);
 
   validateKdfBounds(kdfN, kdfR, kdfP);
 
-  const salt = rawHeaderBytes.slice(16, 32);
-  const cipherId = view.getUint16(32, false);
-  if (cipherId !== 1) {
+  const salt = rawHeaderBytes.slice(29, 45);
+  const cipherId = view.getUint8(45);
+  if (cipherId !== CIPHER_ID_AES_256_GCM) {
     throw new RestoreError(
-      'RESTORE_ERR_UNSUPPORTED_VERSION',
-      `Unsupported cipher algorithm identifier: ${cipherId}`
+      'RESTORE_ERR_UNSUPPORTED_CIPHER',
+      `Unsupported cipher algorithm identifier: ${cipherId}. Expected AES-256-GCM (1).`
     );
   }
 
-  const nonce = rawHeaderBytes.slice(34, 46);
-  const schemaVersion = view.getUint16(46, false);
-  const appVersion = view.getUint16(48, false);
-  const flags = view.getUint16(50, false);
-  const createdAtMs = Number(view.getBigUint64(52, false));
+  const nonce = rawHeaderBytes.slice(46, 58);
+  const appVersion = view.getUint8(58);
+  if (!Number.isSafeInteger(appVersion) || appVersion <= 0) {
+    throw new RestoreError(
+      'RESTORE_ERR_SCHEMA_VALIDATION',
+      'Invalid app version in backup header.'
+    );
+  }
+
+  const flags = view.getUint8(59);
+  if ((flags & FLAGS_RESERVED_MASK) !== 0) {
+    throw new RestoreError(
+      'RESTORE_ERR_INVALID_FLAGS',
+      `Unknown reserved flag bits set in backup header: ${flags}.`
+    );
+  }
 
   return {
-    magic: 'BKBK',
+    magic: 'BMZ1',
     formatVersion,
+    schemaVersion,
+    createdAtMs,
     kdfId,
     kdfN,
     kdfR,
@@ -252,9 +304,7 @@ export function parseHeader(headerBytes: Uint8Array): BackupHeader {
     salt,
     cipherId,
     nonce,
-    schemaVersion,
     appVersion,
-    createdAtMs,
     flags,
     rawHeaderBytes,
   };

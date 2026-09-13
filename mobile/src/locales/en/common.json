@@ -328,7 +328,8 @@
     "detailsTransactions": "Transactions: {{count}}",
     "detailsDebts": "Debts: {{count}}",
     "detailsCounterparties": "Counterparties: {{count}}",
-    "detailsCreated": "Created: {{date}}"
+    "detailsCreated": "Created: {{date}}",
+    "webUnsupported": "Encrypted backup and restore operations are not supported in web browser runtimes due to browser storage limitations. Please use the mobile application on Android or iOS."
   },
   "restore": {
     "title": "Restore Data",
@@ -343,6 +344,14 @@
     "warningBody": "Restoring will completely replace your current device data with the backup contents. This operation cannot be merged or undone. A pre-restore safety snapshot will be created automatically.",
     "backupData": "Backup Data",
     "currentData": "Current Device Data",
+    "tableEntity": "Entity",
+    "tableBackup": "Backup",
+    "tableCurrent": "Current",
+    "tableAccounts": "Accounts",
+    "tableTransactions": "Transactions",
+    "tableDebts": "Debts",
+    "tableCounterparties": "Counterparties",
+    "webUnsupported": "Restore operations are not supported in web browser runtimes. Please use the mobile application on Android or iOS.",
     "confirmCheckbox": "I confirm that I want to replace all current device data with this backup.",
     "confirmRestore": "Confirm & Restore Data",
     "restoring": "Restoring and activating database...",
