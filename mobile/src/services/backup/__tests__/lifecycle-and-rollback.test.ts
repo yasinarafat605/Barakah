@@ -2,6 +2,7 @@ import {
   uint8ArrayToBase64,
   cleanExpiredBackupCacheFiles,
   shareBackupFile,
+  recordVerifiedExternalBackup,
   getLastSuccessfulBackup,
   createEncryptedBackup,
   isBackupOrRestoreInProgress,
@@ -95,7 +96,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
     expect(mockFs.deleteAsync).toHaveBeenCalledWith('file:///mock/app/cache/barakah_backup_expired.fmz', { idempotent: true });
   });
 
-  it('updates backup status to exported on successful share', async () => {
+  it('updates backup status to share_sheet_returned on successful share', async () => {
     const mockDb = {
       runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
     } as unknown as DatabaseConnection;
@@ -109,37 +110,43 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
 
     expect(mockDb.runAsync).toHaveBeenCalledWith(
       'UPDATE backup_history SET status = ?, error_code = ? WHERE id = ?;',
-      'exported',
+      'share_sheet_returned',
       null,
       'bak_123'
     );
   });
 
-  it('updates backup status to share_cancelled when user cancels sharing sheet', async () => {
+  it('does not treat share-sheet return as verified storage in getLastSuccessfulBackup', async () => {
+    const mockDb = {
+      getFirstAsync: jest.fn().mockResolvedValue(null),
+    } as unknown as DatabaseConnection;
+
+    const result = await getLastSuccessfulBackup(mockDb);
+    expect(result).toBeNull();
+    expect(mockDb.getFirstAsync).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE backup_type = 'manual_export' AND status = 'verified_external_copy'")
+    );
+  });
+
+  it('promotes backup status to verified_external_copy upon external-file verification', async () => {
     const mockDb = {
       runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
     } as unknown as DatabaseConnection;
 
-    mockSharing.shareAsync.mockRejectedValue(new Error('User cancelled share'));
-
-    await expect(
-      shareBackupFile(mockDb, 'bak_123', 'file:///mock/cache/backup.fmz')
-    ).rejects.toThrow(BackupError);
+    await recordVerifiedExternalBackup(mockDb, 'checksum_verified_abc');
 
     expect(mockDb.runAsync).toHaveBeenCalledWith(
-      'UPDATE backup_history SET status = ?, error_code = ? WHERE id = ?;',
-      'share_cancelled',
-      null,
-      'bak_123'
+      expect.stringContaining("SET status = 'verified_external_copy'"),
+      'checksum_verified_abc'
     );
   });
 
-  it('updates backup status to failed when share fails unexpectedly', async () => {
+  it('updates backup status to failed when share fails unexpectedly without parsing strings', async () => {
     const mockDb = {
       runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
     } as unknown as DatabaseConnection;
 
-    mockSharing.shareAsync.mockRejectedValue(new Error('I/O pipe error'));
+    mockSharing.shareAsync.mockRejectedValue(new Error('User cancelled'));
 
     await expect(
       shareBackupFile(mockDb, 'bak_123', 'file:///mock/cache/backup.fmz')
@@ -153,12 +160,12 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
     );
   });
 
-  it('retrieves only exported or verified manual backups as last successful backup', async () => {
+  it('retrieves only verified_external_copy manual backups as last successful backup', async () => {
     const mockDb = {
       getFirstAsync: jest.fn().mockResolvedValue({
         id: 'bak_verified_01',
         backup_type: 'manual_export',
-        status: 'exported',
+        status: 'verified_external_copy',
         created_at: 1700000000000,
       }),
     } as unknown as DatabaseConnection;
@@ -168,7 +175,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
     expect(result?.id).toBe('bak_verified_01');
 
     expect(mockDb.getFirstAsync).toHaveBeenCalledWith(
-      expect.stringContaining("WHERE backup_type = 'manual_export' AND status IN ('exported', 'verified')")
+      expect.stringContaining("WHERE backup_type = 'manual_export' AND status = 'verified_external_copy'")
     );
   });
 
@@ -188,7 +195,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
     }
   });
 
-  it('cleans stale staging and rollback artifacts', async () => {
+  it('cleans unreferenced staging artifacts but preserves .old_* recovery databases', async () => {
     mockFs.getInfoAsync.mockResolvedValue({ exists: true, isDirectory: true } as any);
     mockFs.readDirectoryAsync.mockResolvedValue([
       'staging_restore_123.db',
@@ -198,8 +205,10 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
 
     await cleanStaleStagingArtifacts();
 
+    // Disposable staging artifact without active journal reference is deleted
     expect(mockFs.deleteAsync).toHaveBeenCalledWith('file:///mock/app/files/SQLite/staging_restore_123.db', { idempotent: true });
-    expect(mockFs.deleteAsync).toHaveBeenCalledWith('file:///mock/app/files/SQLite/barakah.db.old_456', { idempotent: true });
+    // NEVER delete .old_* files in stale staging artifact cleanup
+    expect(mockFs.deleteAsync).not.toHaveBeenCalledWith('file:///mock/app/files/SQLite/barakah.db.old_456', { idempotent: true });
     expect(mockFs.deleteAsync).not.toHaveBeenCalledWith('file:///mock/app/files/SQLite/barakah.db', { idempotent: true });
   });
 
@@ -212,7 +221,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
       closeAsync: jest.fn().mockResolvedValue(undefined),
     } as unknown as DatabaseConnection;
 
-    const mockStagingDb = {
+    const mockStagingDb: any = {
       execAsync: jest.fn().mockResolvedValue(undefined),
       runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
       getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),

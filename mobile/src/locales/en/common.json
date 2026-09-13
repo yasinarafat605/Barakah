@@ -110,6 +110,8 @@
     "initializing": "Initializing database...",
     "errorTitle": "Database Unavailable",
     "initError": "Failed to initialize the local database. Your data is safe on this device.",
+    "recoveryRequiredTitle": "Manual Recovery Required",
+    "recoveryRequiredSubtitle": "An interrupted restore was detected and your previous data was preserved. Please restore from a safety snapshot or verify backup.",
     "retry": "Retry"
   },
   "categories": {
@@ -282,8 +284,8 @@
     "title": "Backup & Recovery",
     "subtitle": "Protect, verify and recover your financial records",
     "statusTitle": "Backup Status",
-    "lastBackup": "Last successful backup: {{date}}",
-    "noBackupYet": "No backup has been created yet",
+    "lastBackup": "Last verified external backup: {{date}}",
+    "noBackupYet": "No verified external backup yet. Export and verify to confirm recovery.",
     "schemaVersion": "Database Schema: v{{version}}",
     "createBackup": "Create Encrypted Backup",
     "restoreBackup": "Restore from Backup",

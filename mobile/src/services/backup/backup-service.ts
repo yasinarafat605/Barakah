@@ -24,6 +24,7 @@ import {
   BackupManifest,
   BackupPayloadData,
   BackupHistoryRow,
+  BackupHistoryStatus,
   CURRENT_DATABASE_SCHEMA_VERSION,
   APP_VERSION_CODE,
   FLAG_COMPRESSED_DEFLATE,
@@ -110,7 +111,7 @@ export async function cleanExpiredBackupCacheFiles(maxAgeMs: number = 24 * 60 * 
 export async function updateBackupHistoryStatus(
   db: DatabaseConnection,
   historyId: string,
-  status: 'generated' | 'exported' | 'verified' | 'share_cancelled' | 'failed',
+  status: BackupHistoryStatus,
   errorCode?: string | null
 ): Promise<void> {
   try {
@@ -316,6 +317,8 @@ export async function createEncryptedBackup(
 
 /**
  * Invokes native OS share / save sheet for the exported backup file and updates history status truthfully.
+ * Upon successful return from the share sheet, records 'share_sheet_returned'.
+ * Does not parse platform error strings to infer cancellation.
  */
 export async function shareBackupFile(
   db: DatabaseConnection,
@@ -342,26 +345,41 @@ export async function shareBackupFile(
       dialogTitle: 'Save Barakah Backup',
       UTI: 'public.data',
     });
-    // Mark as exported upon successful return from sharing sheet
-    await updateBackupHistoryStatus(db, historyId, 'exported');
+    // Record truthful status: share sheet returned (durable off-device write not yet externally verified)
+    await updateBackupHistoryStatus(db, historyId, 'share_sheet_returned');
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : '';
-    if (errMsg.toLowerCase().includes('cancel') || errMsg.toLowerCase().includes('dismiss')) {
-      await updateBackupHistoryStatus(db, historyId, 'share_cancelled');
-      throw new BackupError('BACKUP_ERR_SHARE_CANCELLED', 'Share action was cancelled.');
-    } else {
-      await updateBackupHistoryStatus(db, historyId, 'failed', 'BACKUP_ERR_SHARE_FAILED');
-      throw new BackupError(
-        'BACKUP_ERR_SHARE_FAILED',
-        `Share action failed: ${errMsg}`
-      );
-    }
+    await updateBackupHistoryStatus(db, historyId, 'failed', 'BACKUP_ERR_SHARE_FAILED');
+    throw new BackupError(
+      'BACKUP_ERR_SHARE_FAILED',
+      `Share action failed: ${errMsg}`
+    );
   }
 }
 
 /**
- * Retrieves the most recent successful manual backup record from backup_history.
- * Only returns backups that reached 'exported' or 'verified' status.
+ * Records confirmed external verification of an exported backup file,
+ * promoting its history status to 'verified_external_copy'.
+ */
+export async function recordVerifiedExternalBackup(
+  db: DatabaseConnection,
+  sha256Checksum: string
+): Promise<void> {
+  try {
+    await db.runAsync(
+      `UPDATE backup_history
+       SET status = 'verified_external_copy'
+       WHERE sha256_checksum = ? AND backup_type = 'manual_export';`,
+      sha256Checksum
+    );
+  } catch {
+    // Non-fatal if backup_history table does not exist yet
+  }
+}
+
+/**
+ * Retrieves the most recent verified external manual backup record from backup_history.
+ * Only returns backups that reached 'verified_external_copy' status.
  */
 export async function getLastSuccessfulBackup(
   db: DatabaseConnection
@@ -369,7 +387,7 @@ export async function getLastSuccessfulBackup(
   try {
     return await db.getFirstAsync<BackupHistoryRow>(
       `SELECT * FROM backup_history
-       WHERE backup_type = 'manual_export' AND status IN ('exported', 'verified')
+       WHERE backup_type = 'manual_export' AND status = 'verified_external_copy'
        ORDER BY created_at DESC
        LIMIT 1;`
     );

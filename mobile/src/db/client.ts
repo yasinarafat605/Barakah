@@ -68,8 +68,18 @@ export async function runExclusiveTransaction<T = void>(
     return db.withTransactionAsync((txn) => task(txn || db));
   }
   if (typeof db.withExclusiveTransactionAsync === 'function') {
-    return db.withExclusiveTransactionAsync((txn) => task((txn || db) as unknown as DatabaseConnection));
+    return db.withExclusiveTransactionAsync((txn) => {
+      if (!txn) {
+        throw new Error('ADAPTER_CONTRACT_ERROR: withExclusiveTransactionAsync did not supply a transaction connection.');
+      }
+      return task(txn as unknown as DatabaseConnection);
+    });
   }
-  return db.withTransactionAsync((txn) => task(txn || db));
+  return db.withTransactionAsync((txn) => {
+    if (!txn) {
+      throw new Error('ADAPTER_CONTRACT_ERROR: withTransactionAsync did not supply a transaction connection.');
+    }
+    return task(txn as unknown as DatabaseConnection);
+  });
 }
 

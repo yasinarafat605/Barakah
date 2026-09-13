@@ -120,6 +120,50 @@ export interface BackupManifest {
   payload: BackupPayloadData;
 }
 
+export const PORTABLE_FINANCIAL_TABLES = [
+  'accounts',
+  'categories',
+  'transactions',
+  'counterparties',
+  'debts',
+  'debt_transactions',
+] as const;
+
+export type PortableFinancialTable = (typeof PORTABLE_FINANCIAL_TABLES)[number];
+
+export type RestorePromotionPhase =
+  | 'initialized'
+  | 'active_moved_to_old'
+  | 'staging_moved_to_active'
+  | 'activation_verified'
+  | 'complete';
+
+export interface RestoreJournal {
+  operationId: string;
+  activePath: string;
+  stagingPath: string;
+  recoveryOldPath: string;
+  safetySnapshotPath: string | null;
+  expectedDestinationChecksum: string;
+  phase: RestorePromotionPhase;
+  updatedAtMs: number;
+}
+
+export type RollbackOutcome =
+  | 'activation_failed_rollback_succeeded'
+  | 'activation_failed_manual_recovery_available'
+  | 'activation_failed_rollback_failed';
+
+export type BackupHistoryStatus =
+  | 'created'
+  | 'generated'
+  | 'share_sheet_returned'
+  | 'verified_external_copy'
+  | 'failed'
+  | 'exported'
+  | 'verified'
+  | 'share_cancelled';
+
 export interface BackupHistoryRow {
   id: string;
   backup_type: 'manual_export' | 'pre_restore_safety' | 'pre_migration_safety';
@@ -129,7 +173,7 @@ export interface BackupHistoryRow {
   file_size_bytes: number;
   sha256_checksum: string;
   record_count: number;
-  status: 'created' | 'generated' | 'exported' | 'verified' | 'share_cancelled' | 'failed';
+  status: BackupHistoryStatus;
   error_code: string | null;
   created_at: number;
 }
@@ -205,7 +249,10 @@ export type RestoreErrorCode =
   | 'RESTORE_ERR_PROMOTION_FAILED'
   | 'RESTORE_ERR_ACTIVATION_FAILED'
   | 'RESTORE_ERR_POST_ACTIVATION_VERIFICATION_FAILED'
-  | 'RESTORE_ERR_ROLLBACK_FAILED';
+  | 'RESTORE_ERR_ROLLBACK_SUCCEEDED'
+  | 'RESTORE_ERR_MANUAL_RECOVERY_AVAILABLE'
+  | 'RESTORE_ERR_ROLLBACK_FAILED'
+  | 'RESTORE_ERR_RECOVERY_REQUIRED';
 
 export class BackupError extends Error {
   constructor(public readonly code: BackupErrorCode, message: string) {
@@ -215,7 +262,11 @@ export class BackupError extends Error {
 }
 
 export class RestoreError extends Error {
-  constructor(public readonly code: RestoreErrorCode, message: string) {
+  constructor(
+    public readonly code: RestoreErrorCode,
+    message: string,
+    public readonly outcome?: RollbackOutcome
+  ) {
     super(message);
     this.name = 'RestoreError';
   }

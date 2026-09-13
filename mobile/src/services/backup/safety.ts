@@ -144,6 +144,67 @@ async function verifySnapshotIntegrity(snapshotName: string, snapshotUri: string
 }
 
 /**
+ * Creates snapshot file using native SQLite backup API when available,
+ * with WAL checkpoint + copyAsync fallback.
+ */
+async function createSnapshotFromLiveDatabase(
+  db: DatabaseConnection,
+  activeDbUri: string,
+  snapshotName: string,
+  snapshotUri: string
+): Promise<void> {
+  let backupSuccessful = false;
+
+  // Attempt native SQLite backup API if available (handles concurrent writes transactionally)
+  if (typeof (SQLite as any).backupDatabaseAsync === 'function') {
+    let snapDb: SQLite.SQLiteDatabase | null = null;
+    let liveDb: SQLite.SQLiteDatabase | null = null;
+    try {
+      snapDb = await SQLite.openDatabaseAsync(`safety_snapshots/${snapshotName}`);
+      liveDb = await SQLite.openDatabaseAsync(DEFAULT_DATABASE_NAME);
+      await (SQLite as any).backupDatabaseAsync({
+        sourceDatabase: liveDb,
+        destDatabase: snapDb,
+      });
+      backupSuccessful = true;
+    } catch {
+      backupSuccessful = false;
+    } finally {
+      if (snapDb) {
+        try { await snapDb.closeAsync(); } catch {}
+      }
+      if (liveDb) {
+        try { await liveDb.closeAsync(); } catch {}
+      }
+    }
+  }
+
+  // Fallback to WAL checkpoint + copy if backupDatabaseAsync is not available or failed
+  if (!backupSuccessful) {
+    try {
+      await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch (err: unknown) {
+      throw new BackupError(
+        'BACKUP_ERR_SNAPSHOT_FAILED',
+        `WAL checkpoint failed before snapshot: ${err instanceof Error ? err.message : 'Unknown checkpoint error'}`
+      );
+    }
+
+    try {
+      await FileSystem.copyAsync({
+        from: activeDbUri,
+        to: snapshotUri,
+      });
+    } catch (err: unknown) {
+      throw new BackupError(
+        'BACKUP_ERR_SNAPSHOT_FAILED',
+        `Failed to copy active database for safety snapshot: ${err instanceof Error ? err.message : 'Copy error'}`
+      );
+    }
+  }
+}
+
+/**
  * Checkpoints WAL and creates a verified pre-migration safety snapshot.
  * Fails closed: throws BackupError on any error to prevent un-snapshotted migrations.
  */
@@ -151,17 +212,7 @@ export async function createPreMigrationSafetySnapshot(
   db: DatabaseConnection,
   currentVersion: number
 ): Promise<string> {
-  // 1. Checkpoint WAL to flush all transactions to disk
-  try {
-    await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
-  } catch (err: unknown) {
-    throw new BackupError(
-      'BACKUP_ERR_SNAPSHOT_FAILED',
-      `WAL checkpoint failed before migration: ${err instanceof Error ? err.message : 'Unknown checkpoint error'}`
-    );
-  }
-
-  // 2. Ensure directories and paths
+  // 1. Ensure directories and paths
   const safetyDir = await ensureSafetyDirectory();
   const activeDbUri = getActiveDatabaseUri();
   if (!activeDbUri) {
@@ -183,20 +234,10 @@ export async function createPreMigrationSafetySnapshot(
   const snapshotName = `pre_migration_v${currentVersion}_${timestamp}.db`;
   const snapshotUri = `${safetyDir}${snapshotName}`;
 
-  // 3. Copy database to snapshot destination
-  try {
-    await FileSystem.copyAsync({
-      from: activeDbUri,
-      to: snapshotUri,
-    });
-  } catch (err: unknown) {
-    throw new BackupError(
-      'BACKUP_ERR_SNAPSHOT_FAILED',
-      `Failed to copy active database for pre-migration safety snapshot: ${err instanceof Error ? err.message : 'Copy error'}`
-    );
-  }
+  // 2. Create snapshot via native backup API or WAL checkpoint + copy
+  await createSnapshotFromLiveDatabase(db, activeDbUri, snapshotName, snapshotUri);
 
-  // 4. Compute real SHA-256 checksum (never literal 'snapshot')
+  // 3. Compute real SHA-256 checksum (never literal 'snapshot')
   let sha256Checksum = '';
   try {
     sha256Checksum = await computeSnapshotSha256(snapshotUri);
@@ -208,17 +249,21 @@ export async function createPreMigrationSafetySnapshot(
     );
   }
 
-  // 5. Verify snapshot integrity with SQLite PRAGMA integrity_check
+  // 4. Verify snapshot integrity with SQLite PRAGMA integrity_check
   await verifySnapshotIntegrity(snapshotName, snapshotUri);
 
-  // 6. Prune old snapshots, retaining strictly the latest 3
+  // 5. Prune old snapshots strictly, retaining the latest 3 (fail closed on retention failure)
   try {
     await pruneOldSafetySnapshots(safetyDir, 'pre_migration_');
-  } catch {
-    // Non-fatal pruning error
+  } catch (err: unknown) {
+    await FileSystem.deleteAsync(snapshotUri, { idempotent: true });
+    throw new BackupError(
+      'BACKUP_ERR_SNAPSHOT_FAILED',
+      `Failed to enforce strict safety snapshot retention: ${err instanceof Error ? err.message : 'Pruning error'}`
+    );
   }
 
-  // 7. Record in backup_history metadata table
+  // 6. Record in backup_history metadata table
   try {
     await db.runAsync(
       `INSERT INTO backup_history (
@@ -286,18 +331,8 @@ export async function createPreRestoreSafetySnapshot(
   const snapshotName = `pre_restore_safety_${timestamp}.db`;
   const snapshotUri = `${safetyDir}${snapshotName}`;
 
-  // 3. Copy database to snapshot destination
-  try {
-    await FileSystem.copyAsync({
-      from: activeDbUri,
-      to: snapshotUri,
-    });
-  } catch (err: unknown) {
-    throw new BackupError(
-      'BACKUP_ERR_SNAPSHOT_FAILED',
-      `Failed to copy active database for pre-restore safety snapshot: ${err instanceof Error ? err.message : 'Copy error'}`
-    );
-  }
+  // 3. Create snapshot via native backup API or WAL checkpoint + copy
+  await createSnapshotFromLiveDatabase(db, activeDbUri, snapshotName, snapshotUri);
 
   // 4. Compute real SHA-256 checksum
   let sha256Checksum = '';
@@ -314,11 +349,15 @@ export async function createPreRestoreSafetySnapshot(
   // 5. Verify snapshot integrity with SQLite PRAGMA integrity_check
   await verifySnapshotIntegrity(snapshotName, snapshotUri);
 
-  // 6. Prune old snapshots, retaining strictly the latest 3
+  // 6. Prune old snapshots strictly, retaining the latest 3 (fail closed on retention failure)
   try {
     await pruneOldSafetySnapshots(safetyDir, 'pre_restore_');
-  } catch {
-    // Non-fatal pruning error
+  } catch (err: unknown) {
+    await FileSystem.deleteAsync(snapshotUri, { idempotent: true });
+    throw new BackupError(
+      'BACKUP_ERR_SNAPSHOT_FAILED',
+      `Failed to enforce strict safety snapshot retention: ${err instanceof Error ? err.message : 'Pruning error'}`
+    );
   }
 
   // 7. Record in backup_history metadata table

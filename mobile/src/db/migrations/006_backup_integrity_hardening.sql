@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS backup_history_new (
   file_size_bytes INTEGER NOT NULL CHECK (typeof(file_size_bytes) = 'integer'),
   sha256_checksum TEXT NOT NULL,
   record_count INTEGER NOT NULL CHECK (typeof(record_count) = 'integer'),
-  status TEXT NOT NULL CHECK (status IN ('created', 'generated', 'exported', 'verified', 'share_cancelled', 'failed')),
+  status TEXT NOT NULL CHECK (status IN ('created', 'generated', 'share_sheet_returned', 'verified_external_copy', 'exported', 'verified', 'share_cancelled', 'failed')),
   error_code TEXT,
   created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer')
 );

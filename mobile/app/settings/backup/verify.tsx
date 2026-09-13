@@ -22,6 +22,8 @@ import {
   verifyAndPreviewBackup,
   DecryptedBackupContext,
 } from '@/src/services/backup/restore-service';
+import { recordVerifiedExternalBackup } from '@/src/services/backup/backup-service';
+import { computeSha256Hex } from '@/src/services/backup/crypto';
 import { RestoreError, MAX_BACKUP_FILE_SIZE_BYTES } from '@/src/services/backup/types';
 import { base64ToUint8Array } from '@/src/services/backup/safety';
 
@@ -89,6 +91,10 @@ export default function VerifyBackupScreen() {
       const db = await getDatabase();
       const ctx = await verifyAndPreviewBackup(db, selectedFile.bytes, passphrase);
       setVerificationResult(ctx);
+
+      // Promote backup history record to 'verified_external_copy'
+      const fileChecksum = computeSha256Hex(selectedFile.bytes);
+      await recordVerifiedExternalBackup(db, fileChecksum);
     } catch (err: unknown) {
       if (err instanceof RestoreError) {
         setErrorKey(err.code);

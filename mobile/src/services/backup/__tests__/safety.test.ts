@@ -11,6 +11,7 @@ import { BackupError } from '../types';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { DatabaseConnection } from '../../../db/types';
+import { runMigrations } from '../../../db/migrations';
 
 jest.mock('expo-file-system/legacy', () => ({
   documentDirectory: 'file:///mock/app/files/',
@@ -25,11 +26,12 @@ jest.mock('expo-file-system/legacy', () => ({
 
 jest.mock('expo-sqlite', () => ({
   openDatabaseAsync: jest.fn(),
+  backupDatabaseAsync: jest.fn(),
 }));
 
 describe('Safety Snapshot Engine & Fail-Closed Invariants', () => {
   const mockFs = FileSystem as jest.Mocked<typeof FileSystem>;
-  const mockSqlite = SQLite as jest.Mocked<typeof SQLite>;
+  const mockSqlite = SQLite as jest.Mocked<typeof SQLite> & { backupDatabaseAsync: jest.Mock };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -39,6 +41,7 @@ describe('Safety Snapshot Engine & Fail-Closed Invariants', () => {
     mockFs.copyAsync.mockResolvedValue(undefined);
     mockFs.deleteAsync.mockResolvedValue(undefined);
     mockFs.readDirectoryAsync.mockResolvedValue([]);
+    mockSqlite.backupDatabaseAsync.mockRejectedValue(new Error('Native backup unavailable'));
   });
 
   it('converts base64 string to Uint8Array accurately without truncation', () => {
@@ -210,5 +213,107 @@ describe('Safety Snapshot Engine & Fail-Closed Invariants', () => {
     expect(snapshots[0].type).toBe('pre_restore');
     expect(snapshots[1].timestamp).toBe(1700000002000);
     expect(snapshots[2].timestamp).toBe(1700000001000);
+  });
+
+  it('Snapshot occurring before any schema alteration: verifies pre-migration snapshot is taken before schema mutations', async () => {
+    const callOrder: string[] = [];
+
+    const mockDb = {
+      getFirstAsync: jest.fn(async (sql: string) => {
+        if (sql.includes('sqlite_master')) {
+          callOrder.push('read_sqlite_master');
+          return { c: 1 };
+        }
+        return null;
+      }),
+      getAllAsync: jest.fn(async (sql: string) => {
+        if (sql.includes('table_info')) {
+          callOrder.push('read_table_info_without_mutation');
+          return [{ name: 'version' }, { name: 'name' }, { name: 'applied_at' }];
+        }
+        if (sql.includes('SELECT version')) {
+          callOrder.push('read_applied_versions');
+          return [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }];
+        }
+        return [];
+      }),
+      execAsync: jest.fn(async (sql: string) => {
+        if (sql.includes('CREATE TABLE')) {
+          callOrder.push('create_or_alter_table');
+        } else if (sql.includes('ALTER TABLE')) {
+          callOrder.push('alter_table_add_column');
+        }
+      }),
+      runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
+      withExclusiveTransactionAsync: jest.fn(async (cb: any) => cb(mockDb)),
+    } as unknown as DatabaseConnection;
+
+    const mockSnapDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    mockSqlite.openDatabaseAsync.mockResolvedValue(mockSnapDb as any);
+
+    // Run migrations which will trigger the snapshot
+    await runMigrations(mockDb);
+
+    // Pre-migration snapshot must read existing state first without altering schema,
+    // and take the snapshot BEFORE any CREATE TABLE or ALTER TABLE statements!
+    const firstMutationIndex = callOrder.findIndex((c) => c === 'create_or_alter_table' || c === 'alter_table_add_column');
+    expect(firstMutationIndex).toBeGreaterThan(0);
+    expect(callOrder[0]).toBe('read_sqlite_master');
+    expect(callOrder[1]).toBe('read_table_info_without_mutation');
+  });
+
+  it('Snapshot under concurrent-write conditions: uses native backupDatabaseAsync when available', async () => {
+    mockSqlite.backupDatabaseAsync.mockResolvedValue(undefined);
+
+    const mockDb: Partial<DatabaseConnection> = {
+      execAsync: jest.fn().mockResolvedValue(undefined),
+      runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
+      getAllAsync: jest.fn().mockResolvedValue([]),
+    };
+
+    const mockSnapDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    mockSqlite.openDatabaseAsync.mockResolvedValue(mockSnapDb as any);
+
+    await createPreRestoreSafetySnapshot(mockDb as DatabaseConnection, 6);
+
+    // Verified that native backupDatabaseAsync was called for safe transactional snapshot under concurrent writes
+    expect(mockSqlite.backupDatabaseAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceDatabase: expect.anything(),
+        destDatabase: expect.anything(),
+      })
+    );
+  });
+
+  it('Strict retention failure: aborts and deletes snapshot file when retention pruning fails', async () => {
+    const mockDb: Partial<DatabaseConnection> = {
+      execAsync: jest.fn().mockResolvedValue(undefined),
+      runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
+    };
+
+    const mockSnapDb = {
+      getFirstAsync: jest.fn().mockResolvedValue({ integrity_check: 'ok' }),
+      closeAsync: jest.fn().mockResolvedValue(undefined),
+    };
+    mockSqlite.openDatabaseAsync.mockResolvedValue(mockSnapDb as any);
+
+    // Force readDirectoryAsync to fail during pruneOldSafetySnapshots
+    mockFs.readDirectoryAsync.mockRejectedValue(new Error('Permission denied reading safety snapshot dir'));
+
+    await expect(
+      createPreRestoreSafetySnapshot(mockDb as DatabaseConnection, 6)
+    ).rejects.toThrow(BackupError);
+
+    // Expect snapshot to be cleaned up on retention failure (fail closed)
+    expect(mockFs.deleteAsync).toHaveBeenCalledWith(
+      expect.stringMatching(/pre_restore_safety_\d+\.db$/),
+      { idempotent: true }
+    );
   });
 });

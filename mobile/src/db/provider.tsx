@@ -8,6 +8,7 @@ import { runMigrations } from './migrations';
 import { Colors } from '../constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { BrandMark } from '../components/BrandMark';
+import { recoverFromInterruptedRestore } from '../services/backup/restore-service';
 
 // Hold native splash screen auto-hide at module load time
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -43,6 +44,9 @@ export async function initializeDatabaseSingleton(): Promise<void> {
 
   if (!activeInitPromise) {
     activeInitPromise = (async () => {
+      if (Platform.OS !== 'web') {
+        await recoverFromInterruptedRestore();
+      }
       const db = await getDatabase();
       await runMigrations(db);
     })();
@@ -86,7 +90,14 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
         console.error('[Barakah DB Init Error]:', err);
       }
 
-      const safeMessage = t('database.initError');
+      const isRecoveryRequired =
+        err instanceof Error &&
+        'code' in err &&
+        (err as any).code === 'RESTORE_ERR_RECOVERY_REQUIRED';
+
+      const safeMessage = isRecoveryRequired
+        ? t('database.recoveryRequiredSubtitle')
+        : t('database.initError');
       setErrorMessage(safeMessage);
       setStatus('error');
 
@@ -131,7 +142,9 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
       <View style={[styles.centerContainer, { backgroundColor: theme.background }]}>
         <BrandMark width={80} height={80} variant="symbol" reverse={colorScheme === 'dark'} />
         <Text style={[styles.errorTitle, { color: theme.text }]}>
-          {t('database.errorTitle')}
+          {errorMessage === t('database.recoveryRequiredSubtitle')
+            ? t('database.recoveryRequiredTitle')
+            : t('database.errorTitle')}
         </Text>
         <Text style={[styles.errorSubtitle, { color: theme.textMuted }]}>
           {errorMessage || t('database.initError')}

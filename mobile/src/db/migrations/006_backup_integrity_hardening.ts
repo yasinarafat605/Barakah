@@ -8,7 +8,7 @@ export const CANONICAL_MIGRATION_CHECKSUMS: Record<number, string> = {
   3: 'ae389f82651e5e44ebf6e561e3a6da77802a217f7ad87736f1a6a3bbf7bf3bb9',
   4: 'c2cbb8c3794dbb5879a5ab83321411d63f686fda31036ff44aeff068309d9d9b',
   5: '0d94b86ce2c88b3cde228624342bac28742a96c5dea7eecea735907c832585bd',
-  6: 'fa2d22a9ebf7d7f180f95be7d3714417d9f7554fb10d2220b3bde77342f3407f',
+  6: 'b7f20e8e2dd800e403dd1026916662436535b9b1fbe53a932e72121e632c59f4',
 };
 
 async function applyMigration006(db: DatabaseConnection): Promise<void> {
@@ -23,7 +23,7 @@ async function applyMigration006(db: DatabaseConnection): Promise<void> {
       file_size_bytes INTEGER NOT NULL CHECK (typeof(file_size_bytes) = 'integer'),
       sha256_checksum TEXT NOT NULL,
       record_count INTEGER NOT NULL CHECK (typeof(record_count) = 'integer'),
-      status TEXT NOT NULL CHECK (status IN ('created', 'generated', 'exported', 'verified', 'share_cancelled', 'failed')),
+      status TEXT NOT NULL CHECK (status IN ('created', 'generated', 'share_sheet_returned', 'verified_external_copy', 'exported', 'verified', 'share_cancelled', 'failed')),
       error_code TEXT,
       created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer')
     );

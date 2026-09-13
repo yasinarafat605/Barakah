@@ -1,4 +1,5 @@
 import { createBetterSqliteConnection } from '../test-adapter';
+import { runExclusiveTransaction } from '../client';
 
 describe('Database Adapter Transaction Contract', () => {
   it('supplies the transaction connection object to withExclusiveTransactionAsync and executes atomically', async () => {
@@ -73,5 +74,32 @@ describe('Database Adapter Transaction Contract', () => {
       'tx_2'
     );
     expect(abortedRow).toBeNull();
+  });
+
+  it('Missing native transaction callback rejection: rejects when transaction callback receives no transaction object', async () => {
+    const mockFaultyDb: any = {
+      withExclusiveTransactionAsync: jest.fn(async (cb: any) => {
+        // Simulates broken native bridge returning null/undefined
+        return cb(null);
+      }),
+    };
+
+    await expect(
+      runExclusiveTransaction(mockFaultyDb, async (txn) => {
+        await txn.runAsync('SELECT 1;');
+      })
+    ).rejects.toThrow('ADAPTER_CONTRACT_ERROR: withExclusiveTransactionAsync did not supply a transaction connection.');
+
+    const mockFaultyTxDb: any = {
+      withTransactionAsync: jest.fn(async (cb: any) => {
+        return cb(undefined);
+      }),
+    };
+
+    await expect(
+      runExclusiveTransaction(mockFaultyTxDb, async (txn) => {
+        await txn.runAsync('SELECT 1;');
+      })
+    ).rejects.toThrow('ADAPTER_CONTRACT_ERROR: withTransactionAsync did not supply a transaction connection.');
   });
 });

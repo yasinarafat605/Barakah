@@ -33,7 +33,42 @@ export interface MigrationResult {
 }
 
 export async function runMigrations(db: DatabaseConnection): Promise<MigrationResult> {
-  // Ensure schema_migrations ledger table exists
+  // 1. Read existing migration state WITHOUT altering or mutating the schema
+  const tableCheck = await db.getFirstAsync<{ c: number }>(
+    "SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name='schema_migrations';"
+  );
+  const tableExists = (tableCheck?.c ?? 0) > 0;
+
+  let appliedRows: { version: number; checksum?: string | null }[] = [];
+  if (tableExists) {
+    const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(schema_migrations);');
+    const hasChecksum = cols.some((c) => c.name === 'checksum');
+    if (hasChecksum) {
+      appliedRows = await db.getAllAsync<{ version: number; checksum?: string | null }>(
+        'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
+      );
+    } else {
+      appliedRows = await db.getAllAsync<{ version: number; checksum?: string | null }>(
+        'SELECT version, NULL as checksum FROM schema_migrations ORDER BY version ASC;'
+      );
+    }
+  }
+
+  const appliedSet = new Set(appliedRows.map((r) => r.version));
+  const pending = MIGRATIONS.filter((m) => !appliedSet.has(m.version)).sort((a, b) => a.version - b.version);
+
+  // 2. Take the pre-migration safety snapshot BEFORE any schema alterations (fail closed)
+  if (
+    pending.length > 0 &&
+    appliedRows.length > 0 &&
+    Platform.OS !== 'web' &&
+    Boolean(FileSystem.documentDirectory)
+  ) {
+    const latestApplied = Math.max(...appliedRows.map((r) => r.version));
+    await createPreMigrationSafetySnapshot(db, latestApplied);
+  }
+
+  // 3. ONLY AFTER the safety snapshot: ensure schema_migrations table and columns exist
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY NOT NULL,
@@ -42,7 +77,6 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
     );
   `);
 
-  // Ensure checksum column exists if on schema 5+
   try {
     const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(schema_migrations);');
     if (!cols.some((c) => c.name === 'checksum')) {
@@ -52,13 +86,7 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
     // Column check fallback
   }
 
-  // Fetch currently applied migrations
-  const appliedRows = await db.getAllAsync<{ version: number; checksum?: string | null }>(
-    'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
-  );
-  const appliedSet = new Set(appliedRows.map((r) => r.version));
-
-  // If Migration 006 was already applied, verify all existing checksums on startup
+  // 4. If Migration 006 was already applied, verify all existing checksums on startup
   if (appliedSet.has(6)) {
     for (const r of appliedRows) {
       const expected = CANONICAL_MIGRATION_CHECKSUMS[r.version];
@@ -71,19 +99,6 @@ export async function runMigrations(db: DatabaseConnection): Promise<MigrationRe
   }
 
   const newlyApplied: number[] = [];
-  const pending = MIGRATIONS.filter((m) => !appliedSet.has(m.version)).sort((a, b) => a.version - b.version);
-
-  // If there is existing data and pending migrations on a native filesystem, create a pre-migration safety snapshot first (fail closed)
-  if (
-    pending.length > 0 &&
-    appliedRows.length > 0 &&
-    Platform.OS !== 'web' &&
-    Boolean(FileSystem.documentDirectory)
-  ) {
-    const latestApplied = Math.max(...appliedRows.map((r) => r.version));
-    await createPreMigrationSafetySnapshot(db, latestApplied);
-  }
-
   for (const migration of pending) {
     await runExclusiveTransaction(db, async (txn) => {
       await migration.up(txn);
