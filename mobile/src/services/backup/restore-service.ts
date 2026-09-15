@@ -158,15 +158,15 @@ export function validateJournalPath(
   return allowedKinds.some((kind) => {
     switch (kind) {
       case 'active':
-        return fileName === 'barakah.db' || fileName.endsWith('.db');
+        return isInBaseDir && !isInSnapshotsDir && fileName === 'barakah.db';
       case 'staging':
-        return fileName.startsWith('staging_restore_') && fileName.endsWith('.db');
+        return isInBaseDir && !isInSnapshotsDir && fileName.startsWith('staging_restore_') && fileName.endsWith('.db');
       case 'recoveryOld':
-        return fileName.startsWith('barakah.db.old_');
+        return isInBaseDir && !isInSnapshotsDir && fileName.startsWith('barakah.db.old_');
       case 'snapshot':
         return (
-          fileName.startsWith('snapshot_') ||
-          fileName.startsWith('barakah_') ||
+          isInSnapshotsDir &&
+          (fileName.startsWith('pre_migration_') || fileName.startsWith('pre_restore_')) &&
           fileName.endsWith('.db')
         );
       default:
@@ -198,23 +198,23 @@ function validateJournalEnvelopeContent(content: string): {
   const root = parsed as Record<string, unknown>;
   let payload: unknown;
 
-  if (root.version === 1 && typeof root.checksum === 'string' && root.payload) {
+  if (root.version === 2 && typeof root.checksum === 'string' && root.payload) {
     // Envelope format
     const expectedChecksum = computeSha256Hex(canonicalJsonStringify(root.payload));
     if (root.checksum !== expectedChecksum) {
       return { valid: false, error: 'Journal checksum mismatch' };
     }
     payload = root.payload;
-  } else if (typeof root.operationId === 'string' && typeof root.phase === 'string') {
-    // Legacy un-enveloped format
-    payload = root;
   } else {
-    return { valid: false, error: 'Missing required journal fields or envelope' };
+    return { valid: false, error: 'Unsupported or malformed restore journal version' };
   }
 
   const j = payload as Partial<RestoreJournal>;
-  if (j.journalVersion !== undefined && j.journalVersion !== 1) {
+  if (j.journalVersion !== 2) {
     return { valid: false, error: 'Unsupported journalVersion' };
+  }
+  if (!Number.isSafeInteger(j.generation) || (j.generation ?? -1) < 0) {
+    return { valid: false, error: 'Missing or invalid generation' };
   }
   if (typeof j.operationId !== 'string' || !j.operationId.trim()) {
     return { valid: false, error: 'Missing or invalid operationId' };
@@ -224,6 +224,8 @@ function validateJournalEnvelopeContent(content: string): {
     'active_moved_to_old',
     'staging_moved_to_active',
     'activation_verified',
+    'rollback_candidate_verified',
+    'rollback_restored_verified',
     'complete',
   ];
   if (!j.phase || !validPhases.includes(j.phase)) {
@@ -243,8 +245,20 @@ function validateJournalEnvelopeContent(content: string): {
   if (j.safetySnapshotPath !== null && !validateJournalPath(j.safetySnapshotPath, ['snapshot'])) {
     return { valid: false, error: 'Invalid or unsafe safetySnapshotPath' };
   }
-  if (typeof j.expectedDestinationChecksum !== 'string' || !j.expectedDestinationChecksum.trim()) {
-    return { valid: false, error: 'Missing or invalid expectedDestinationChecksum' };
+  if (j.recoverySourcePath !== null && !validateJournalPath(j.recoverySourcePath, ['active', 'recoveryOld', 'snapshot'])) {
+    return { valid: false, error: 'Invalid or unsafe recoverySourcePath' };
+  }
+  if (j.completionIdentity !== null && j.completionIdentity !== 'original' && j.completionIdentity !== 'destination') {
+    return { valid: false, error: 'Invalid completionIdentity' };
+  }
+  if (j.phase === 'complete' && j.completionIdentity === null) {
+    return { valid: false, error: 'Complete journal is missing completionIdentity' };
+  }
+  if (typeof j.expectedOriginalPortableDigest !== 'string' || !/^[a-f0-9]{64}$/.test(j.expectedOriginalPortableDigest)) {
+    return { valid: false, error: 'Missing or invalid expectedOriginalPortableDigest' };
+  }
+  if (typeof j.expectedDestinationPortableDigest !== 'string' || !/^[a-f0-9]{64}$/.test(j.expectedDestinationPortableDigest)) {
+    return { valid: false, error: 'Missing or invalid expectedDestinationPortableDigest' };
   }
   if (typeof j.updatedAtMs !== 'number' || isNaN(j.updatedAtMs) || j.updatedAtMs <= 0) {
     return { valid: false, error: 'Missing or invalid updatedAtMs' };
@@ -253,13 +267,17 @@ function validateJournalEnvelopeContent(content: string): {
   return {
     valid: true,
     journal: {
-      journalVersion: 1,
+      journalVersion: 2,
+      generation: j.generation!,
       operationId: j.operationId!,
       activePath: j.activePath!,
       stagingPath: j.stagingPath || '',
       recoveryOldPath: j.recoveryOldPath || '',
       safetySnapshotPath: j.safetySnapshotPath ?? null,
-      expectedDestinationChecksum: j.expectedDestinationChecksum!,
+      recoverySourcePath: j.recoverySourcePath ?? null,
+      completionIdentity: j.completionIdentity ?? null,
+      expectedOriginalPortableDigest: j.expectedOriginalPortableDigest!,
+      expectedDestinationPortableDigest: j.expectedDestinationPortableDigest!,
       phase: j.phase!,
       updatedAtMs: j.updatedAtMs!,
     },
@@ -312,6 +330,14 @@ export async function readRestoreJournalWithStatus(): Promise<JournalReadResult>
           sourceUri: candidate.uri,
         };
       } else {
+        if (validation.error?.startsWith('Unsupported')) {
+          return {
+            journal: null,
+            corrupt: true,
+            errorDetail: validation.error,
+            sourceUri: candidate.uri,
+          };
+        }
         if (!firstCorruptionError) {
           firstCorruptionError = validation.error;
         }
@@ -342,7 +368,7 @@ export async function readRestoreJournal(): Promise<RestoreJournal | null> {
 
 /**
  * Writes the restore journal with two-phase commit:
- * 1. Write envelope ({ version: 1, checksum, payload }) to .tmp file.
+ * 1. Write envelope ({ version: 2, checksum, payload }) to .tmp file.
  * 2. Copy current journal to .bak if it exists (retaining previous valid generation).
  * 3. Safely move .tmp file to active journal.
  */
@@ -353,7 +379,7 @@ export async function writeRestoreJournal(journal: RestoreJournal): Promise<void
   if (!journalUri || !tmpUri || !bakUri) return;
 
   const envelope: RestoreJournalEnvelope = {
-    version: 1,
+    version: 2,
     checksum: computeSha256Hex(canonicalJsonStringify(journal)),
     payload: journal,
   };
@@ -374,6 +400,113 @@ export async function writeRestoreJournal(journal: RestoreJournal): Promise<void
 
   // 3. Promote temporary file to primary journal
   await FileSystem.moveAsync({ from: tmpUri, to: journalUri });
+}
+
+const ALLOWED_RESTORE_TRANSITIONS: Readonly<Record<RestorePromotionPhase, readonly RestorePromotionPhase[]>> = {
+  initialized: ['active_moved_to_old', 'rollback_candidate_verified', 'rollback_restored_verified'],
+  active_moved_to_old: ['staging_moved_to_active', 'rollback_candidate_verified'],
+  staging_moved_to_active: ['activation_verified', 'rollback_candidate_verified'],
+  activation_verified: ['complete', 'rollback_candidate_verified'],
+  rollback_candidate_verified: ['rollback_restored_verified'],
+  rollback_restored_verified: ['complete'],
+  complete: [],
+};
+
+export function createRestoreJournalTransition(
+  current: RestoreJournal,
+  nextPhase: RestorePromotionPhase,
+  expectedOperationId: string,
+  expectedGeneration: number,
+  updates: Partial<Pick<RestoreJournal, 'recoverySourcePath' | 'completionIdentity'>> = {}
+): RestoreJournal {
+  if (
+    current.journalVersion !== 2 ||
+    current.operationId !== expectedOperationId ||
+    current.generation !== expectedGeneration
+  ) {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      'Restore journal identity or generation could not be proven. Recovery candidates were preserved.'
+    );
+  }
+
+  if (!ALLOWED_RESTORE_TRANSITIONS[current.phase]?.includes(nextPhase)) {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      'Illegal restore journal transition. Recovery candidates were preserved.'
+    );
+  }
+
+  if (nextPhase === 'rollback_candidate_verified' && !updates.recoverySourcePath) {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      'A verified rollback source was not recorded. Recovery candidates were preserved.'
+    );
+  }
+  if (nextPhase === 'complete') {
+    const requiredIdentity = current.phase === 'activation_verified' ? 'destination' : 'original';
+    if (updates.completionIdentity !== requiredIdentity) {
+      throw new RestoreError(
+        'RESTORE_ERR_RECOVERY_REQUIRED',
+        'Restore completion identity could not be proven. Recovery candidates were preserved.'
+      );
+    }
+  }
+
+  return {
+    ...current,
+    ...updates,
+    phase: nextPhase,
+    generation: current.generation + 1,
+    updatedAtMs: Date.now(),
+  };
+}
+
+export async function transitionRestoreJournal(
+  current: RestoreJournal,
+  nextPhase: RestorePromotionPhase,
+  updates: Partial<Pick<RestoreJournal, 'recoverySourcePath' | 'completionIdentity'>> = {}
+): Promise<RestoreJournal> {
+  const before = await readRestoreJournalWithStatus();
+  if (
+    before.corrupt ||
+    !before.journal ||
+    before.journal.operationId !== current.operationId ||
+    before.journal.generation !== current.generation ||
+    before.journal.phase !== current.phase
+  ) {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      'Persisted restore journal state could not be proven. Recovery candidates were preserved.'
+    );
+  }
+
+  const next = createRestoreJournalTransition(
+    current,
+    nextPhase,
+    current.operationId,
+    current.generation,
+    updates
+  );
+  try {
+    await writeRestoreJournal(next);
+    const after = await readRestoreJournalWithStatus();
+    if (
+      after.corrupt ||
+      !after.journal ||
+      after.journal.operationId !== next.operationId ||
+      after.journal.generation !== next.generation ||
+      after.journal.phase !== next.phase
+    ) {
+      throw new Error('transition verification failed');
+    }
+  } catch {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      'Restore journal transition was not durably persisted. Recovery candidates were preserved.'
+    );
+  }
+  return next;
 }
 
 export async function clearRestoreJournal(): Promise<void> {
@@ -449,54 +582,40 @@ export async function cleanStaleStagingArtifacts(): Promise<void> {
   }
 }
 
-/**
- * Verifies that a database file exists and passes SQLite PRAGMA integrity_check and foreign_key_check.
- */
-async function verifyCandidateDatabase(dbPath: string): Promise<boolean> {
-  try {
-    const info = await FileSystem.getInfoAsync(dbPath);
-    if (!info.exists) return false;
-
-    if (!FileSystem.documentDirectory) return false;
-    const sqliteDir = `${FileSystem.documentDirectory}SQLite/`;
-    let dbName = '';
-    let tempUri: string | null = null;
-
-    if (dbPath.startsWith(sqliteDir)) {
-      dbName = dbPath.slice(sqliteDir.length);
-    } else {
-      dbName = `temp_verify_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.db`;
-      tempUri = `${sqliteDir}${dbName}`;
-      await FileSystem.copyAsync({ from: dbPath, to: tempUri });
-    }
-
-    const testDb = await SQLite.openDatabaseAsync(dbName);
-    try {
-      const integrity = await testDb.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check;');
-      const fkViolations = await testDb.getAllAsync('PRAGMA foreign_key_check;');
-      await testDb.closeAsync();
-      if (tempUri) {
-        await FileSystem.deleteAsync(tempUri, { idempotent: true });
-        await FileSystem.deleteAsync(`${tempUri}-wal`, { idempotent: true });
-        await FileSystem.deleteAsync(`${tempUri}-shm`, { idempotent: true });
-      }
-      return integrity?.integrity_check === 'ok' && fkViolations.length === 0;
-    } catch {
-      try { await testDb.closeAsync(); } catch {}
-      if (tempUri) {
-        await FileSystem.deleteAsync(tempUri, { idempotent: true });
-      }
-      return false;
-    }
-  } catch {
-    return false;
-  }
+async function readPortablePayload(db: DatabaseConnection): Promise<BackupPayloadData> {
+  return {
+    accounts: await db.getAllAsync<any>('SELECT * FROM accounts ORDER BY id ASC;'),
+    categories: await db.getAllAsync<any>('SELECT * FROM categories ORDER BY id ASC;'),
+    transactions: await db.getAllAsync<any>('SELECT * FROM transactions ORDER BY id ASC;'),
+    counterparties: await db.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;'),
+    debts: await db.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;'),
+    debt_transactions: await db.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;'),
+    schema_migrations: await db.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;'),
+  };
 }
 
-/**
- * Verifies that a database file exists and matches the expected destination manifest digest.
- */
-async function verifyDatabaseManifestDigest(dbPath: string, expectedDigest: string): Promise<boolean> {
+export async function computeDatabasePortableDigest(
+  db: DatabaseConnection,
+  useConsistentTransaction = false
+): Promise<string> {
+  const payload = useConsistentTransaction
+    ? await runExclusiveTransaction(db, (txn) => readPortablePayload(txn))
+    : await readPortablePayload(db);
+  return computeManifestDigest(computeTableChecksums(payload));
+}
+
+async function verifyOpenDatabasePortableIdentity(
+  db: DatabaseConnection,
+  expectedDigest: string
+): Promise<boolean> {
+  const integrity = await db.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check;');
+  const fkViolations = await db.getAllAsync('PRAGMA foreign_key_check;');
+  if (integrity?.integrity_check !== 'ok' || fkViolations.length > 0) return false;
+  return (await computeDatabasePortableDigest(db)) === expectedDigest;
+}
+
+/** Verifies structural integrity and the complete portable financial-table identity. */
+async function verifyDatabasePortableIdentity(dbPath: string, expectedDigest: string): Promise<boolean> {
   try {
     const info = await FileSystem.getInfoAsync(dbPath);
     if (!info.exists) return false;
@@ -516,14 +635,7 @@ async function verifyDatabaseManifestDigest(dbPath: string, expectedDigest: stri
 
     const testDb = await SQLite.openDatabaseAsync(dbName);
     try {
-      const accounts = await testDb.getAllAsync<any>('SELECT * FROM accounts ORDER BY id ASC;');
-      const categories = await testDb.getAllAsync<any>('SELECT * FROM categories ORDER BY id ASC;');
-      const transactions = await testDb.getAllAsync<any>('SELECT * FROM transactions ORDER BY id ASC;');
-      const counterparties = await testDb.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
-      const debts = await testDb.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
-      const debt_transactions = await testDb.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
-      const schema_migrations = await testDb.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
-
+      const valid = await verifyOpenDatabasePortableIdentity(testDb as unknown as DatabaseConnection, expectedDigest);
       await testDb.closeAsync();
       if (tempUri) {
         await FileSystem.deleteAsync(tempUri, { idempotent: true });
@@ -531,18 +643,7 @@ async function verifyDatabaseManifestDigest(dbPath: string, expectedDigest: stri
         await FileSystem.deleteAsync(`${tempUri}-shm`, { idempotent: true });
       }
 
-      const checksums = computeTableChecksums({
-        accounts,
-        categories,
-        transactions,
-        counterparties,
-        debts,
-        debt_transactions,
-        schema_migrations,
-      });
-
-      const computedDigest = computeManifestDigest(checksums);
-      return computedDigest === expectedDigest || expectedDigest === checksums.transactions;
+      return valid;
     } catch {
       try { await testDb.closeAsync(); } catch {}
       if (tempUri) {
@@ -570,122 +671,100 @@ export async function recoverFromInterruptedRestore(): Promise<void> {
     );
   }
 
-  const journal = journalResult.journal;
-  if (!journal) return;
+  const initialJournal = journalResult.journal;
+  if (!initialJournal) return;
+  let journal: RestoreJournal = initialJournal;
 
   const activeDbUri = journal.activePath || getActiveDatabaseUri();
-  const recoveryOldUri = journal.recoveryOldPath;
-  const safetySnapshotUri = journal.safetySnapshotPath;
+  if (!activeDbUri) return;
 
-  if (!activeDbUri) {
-    return;
-  }
-
-  // Phase 'complete': Nothing to recover, safely clear journal
-  if (journal.phase === 'complete') {
-    await clearRestoreJournal();
-    return;
-  }
-
-  const restoreFromPath = async (sourcePath: string): Promise<boolean> => {
-    try {
-      await FileSystem.deleteAsync(activeDbUri, { idempotent: true });
-      await FileSystem.deleteAsync(`${activeDbUri}-wal`, { idempotent: true });
-      await FileSystem.deleteAsync(`${activeDbUri}-shm`, { idempotent: true });
-
-      const sourceInfo = await FileSystem.getInfoAsync(sourcePath);
-      if (!sourceInfo.exists) return false;
-
-      await FileSystem.copyAsync({ from: sourcePath, to: activeDbUri });
-      return await verifyCandidateDatabase(activeDbUri);
-    } catch {
-      return false;
-    }
+  const failClosed = (): never => {
+    throw new RestoreError(
+      'RESTORE_ERR_RECOVERY_REQUIRED',
+      'Safe automatic restore recovery could not be proven. All recovery candidates were preserved.'
+    );
   };
 
-  // Phase 'initialized': Active database was never moved!
-  // "For initialized, verify the untouched active database before restoring a snapshot."
+  const finishComplete = async (): Promise<void> => {
+    if (journal.phase !== 'complete' || !journal.completionIdentity) failClosed();
+    const expected = journal.completionIdentity === 'destination'
+      ? journal.expectedDestinationPortableDigest
+      : journal.expectedOriginalPortableDigest;
+    if (!(await verifyDatabasePortableIdentity(activeDbUri, expected))) failClosed();
+    if (journal.recoveryOldPath) {
+      await FileSystem.deleteAsync(journal.recoveryOldPath, { idempotent: true });
+    }
+    if (journal.stagingPath) {
+      await FileSystem.deleteAsync(journal.stagingPath, { idempotent: true });
+      await FileSystem.deleteAsync(`${journal.stagingPath}-wal`, { idempotent: true });
+      await FileSystem.deleteAsync(`${journal.stagingPath}-shm`, { idempotent: true });
+    }
+    await clearRestoreJournal();
+  };
+
+  const restoreVerifiedOriginal = async (sourcePath: string): Promise<void> => {
+    if (!(await verifyDatabasePortableIdentity(sourcePath, journal.expectedOriginalPortableDigest))) failClosed();
+    if (journal.phase !== 'rollback_candidate_verified') {
+      journal = await transitionRestoreJournal(journal, 'rollback_candidate_verified', {
+        recoverySourcePath: sourcePath,
+      });
+    }
+    await FileSystem.deleteAsync(activeDbUri, { idempotent: true });
+    await FileSystem.deleteAsync(`${activeDbUri}-wal`, { idempotent: true });
+    await FileSystem.deleteAsync(`${activeDbUri}-shm`, { idempotent: true });
+    await FileSystem.copyAsync({ from: sourcePath, to: activeDbUri });
+    if (!(await verifyDatabasePortableIdentity(activeDbUri, journal.expectedOriginalPortableDigest))) failClosed();
+    journal = await transitionRestoreJournal(journal, 'rollback_restored_verified');
+    journal = await transitionRestoreJournal(journal, 'complete', { completionIdentity: 'original' });
+    await finishComplete();
+  };
+
+  if (journal.phase === 'complete') {
+    await finishComplete();
+    return;
+  }
+
+  if (journal.phase === 'rollback_restored_verified') {
+    if (!(await verifyDatabasePortableIdentity(activeDbUri, journal.expectedOriginalPortableDigest))) failClosed();
+    journal = await transitionRestoreJournal(journal, 'complete', { completionIdentity: 'original' });
+    await finishComplete();
+    return;
+  }
+
+  if (journal.phase === 'rollback_candidate_verified') {
+    const recoverySourcePath = journal.recoverySourcePath;
+    if (!recoverySourcePath) return failClosed();
+    await restoreVerifiedOriginal(recoverySourcePath);
+    return;
+  }
+
+  if (journal.phase === 'activation_verified') {
+    if (!(await verifyDatabasePortableIdentity(activeDbUri, journal.expectedDestinationPortableDigest))) failClosed();
+    journal = await transitionRestoreJournal(journal, 'complete', { completionIdentity: 'destination' });
+    await finishComplete();
+    return;
+  }
+
   if (journal.phase === 'initialized') {
-    const activeValid = await verifyCandidateDatabase(activeDbUri);
-    if (activeValid) {
-      await clearRestoreJournal();
+    if (await verifyDatabasePortableIdentity(activeDbUri, journal.expectedOriginalPortableDigest)) {
+      journal = await transitionRestoreJournal(journal, 'rollback_restored_verified');
+      journal = await transitionRestoreJournal(journal, 'complete', { completionIdentity: 'original' });
+      await finishComplete();
       return;
     }
-    // If active database was not valid, try restoring from safetySnapshotUri
-    if (safetySnapshotUri) {
-      const snapValid = await verifyCandidateDatabase(safetySnapshotUri);
-      if (snapValid) {
-        const restored = await restoreFromPath(safetySnapshotUri);
-        if (restored) {
-          await clearRestoreJournal();
-          return;
-        }
-      }
-    }
-    throw new RestoreError(
-      'RESTORE_ERR_RECOVERY_REQUIRED',
-      `An interrupted restore operation in phase 'initialized' was detected (Operation ID: ${journal.operationId}), but active database and safety snapshot failed verification. All recovery files have been preserved.`
-    );
   }
 
-  // Phase 'activation_verified': Staging was promoted and verified before interruption.
-  // "For activation_verified, verify the expected destination manifest digest before deleting the old database."
-  if (journal.phase === 'activation_verified') {
-    const activeValid = await verifyCandidateDatabase(activeDbUri);
-    if (activeValid) {
-      const digestMatches = await verifyDatabaseManifestDigest(activeDbUri, journal.expectedDestinationChecksum);
-      if (digestMatches) {
-        if (recoveryOldUri) {
-          await FileSystem.deleteAsync(recoveryOldUri, { idempotent: true });
-        }
-        if (journal.stagingPath) {
-          await FileSystem.deleteAsync(journal.stagingPath, { idempotent: true });
-        }
-        await clearRestoreJournal();
-        return;
-      }
-    }
-    // If destination digest does not match, do NOT delete recoveryOldUri!
-    // Fails closed with RESTORE_ERR_RECOVERY_REQUIRED and preserves old database!
-    throw new RestoreError(
-      'RESTORE_ERR_RECOVERY_REQUIRED',
-      `An interrupted restore operation in phase 'activation_verified' was detected (Operation ID: ${journal.operationId}), but active database manifest digest mismatch or integrity failure occurred. Old database has been preserved.`
-    );
-  }
-
-  // For incomplete promotion phases ('active_moved_to_old', 'staging_moved_to_active'):
-  // Prefer the verified original database!
-  let recovered = false;
-
-  // Candidate 1: recoveryOldUri (the intact active database moved during restore)
-  if (recoveryOldUri) {
-    const oldValid = await verifyCandidateDatabase(recoveryOldUri);
-    if (oldValid) {
-      recovered = await restoreFromPath(recoveryOldUri);
-      if (recovered) {
-        await clearRestoreJournal();
-        return;
-      }
-    }
-  }
-
-  // Candidate 2: safetySnapshotUri (pre-restore safety snapshot)
-  if (!recovered && safetySnapshotUri) {
-    const snapValid = await verifyCandidateDatabase(safetySnapshotUri);
-    if (snapValid) {
-      recovered = await restoreFromPath(safetySnapshotUri);
-      if (recovered) {
-        await clearRestoreJournal();
-        return;
-      }
-    }
-  }
-
-  // If neither candidate verifies, preserve all files and journal
-  throw new RestoreError(
-    'RESTORE_ERR_RECOVERY_REQUIRED',
-    `An interrupted restore operation was detected (Operation ID: ${journal.operationId}, Phase: ${journal.phase}), but automatic recovery could not verify a valid database. All recovery files have been safely preserved.`
+  const candidates = [journal.recoveryOldPath, journal.safetySnapshotPath].filter(
+    (path): path is string => Boolean(path)
   );
+  for (const candidate of candidates) {
+    if (await verifyDatabasePortableIdentity(candidate, journal.expectedOriginalPortableDigest)) {
+      await restoreVerifiedOriginal(candidate);
+      return;
+    }
+  }
+
+  failClosed();
 }
 
 /**
@@ -1086,17 +1165,16 @@ async function verifyActivatedDatabase(
  * Executes full crash-recoverable staged replacement restore:
  * 1. Cleans unreferenced stale staging artifacts.
  * 2. Creates unique staging database.
- * 3. Populates & verifies staging database under exclusive transaction.
- * 4. Checkpoints staging WAL and closes staging connection.
- * 5. Creates fail-closed pre-restore safety snapshot of active database.
- * 6. Closes active live database connection.
- * 7. Writes restore journal with 'initialized' phase.
- * 8. Moves active DB to recoveryOldPath and flushes 'active_moved_to_old' phase.
- * 9. Moves staging DB to active path and flushes 'staging_moved_to_active' phase.
- * 10. Reopens live connection and runs full post-activation checks.
- * 11. Flushes 'activation_verified' phase on success.
- * 12. Safely prunes recovery database only after confirmed verification and clears journal.
- * 13. Automatic rollback with verification and truthful outcome reporting on failure.
+ * 3. Populates staging and verifies its complete destination portable identity.
+ * 4. Checkpoints and consistently captures the original portable identity.
+ * 5. Creates a fail-closed pre-restore safety snapshot and closes live connections.
+ * 6. Writes and verifies the version-2 'initialized' journal before movement.
+ * 7. Moves active DB to recoveryOldPath and transitions to 'active_moved_to_old'.
+ * 8. Moves staging DB to active path and transitions to 'staging_moved_to_active'.
+ * 9. Reopens live data and verifies integrity, invariants, and destination identity.
+ * 10. Transitions through 'activation_verified' to 'complete'.
+ * 11. Prunes recovery data only after completion identity is durably recorded.
+ * 12. Uses the same journaled identity state machine for automatic rollback.
  */
 export async function executeRestore(
   liveDb: DatabaseConnection,
@@ -1120,6 +1198,9 @@ export async function executeRestore(
   let activeDbUri: string | null = null;
   let currentJournal: RestoreJournal | null = null;
   let preserveStaging = false;
+  let promotionStarted = false;
+  const destinationPortableDigest = computeManifestDigest(context.manifest.tableChecksums);
+  let originalPortableDigest: string | null = null;
 
   try {
     // 0. Remove unreferenced stale staging artifacts
@@ -1135,18 +1216,29 @@ export async function executeRestore(
 
     // 2. Populate and verify staging database
     await populateAndVerifyStagingDatabase(stagingDb, context.manifest);
+    const stagingPortableDigest = await computeDatabasePortableDigest(stagingDb);
+    if (stagingPortableDigest !== destinationPortableDigest) {
+      throw new RestoreError(
+        'RESTORE_ERR_CHECKSUM_MISMATCH',
+        'Staging database portable-data identity does not match the verified backup.'
+      );
+    }
 
     // 3. Close staging database to prepare for staged replacement
     await stagingDb.closeAsync();
     stagingDb = null;
 
-    // 4. Fail-closed: create pre-restore safety snapshot of active live database
+    // 4. Checkpoint and consistently capture the original identity before any filesystem movement.
+    await liveDb.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+    originalPortableDigest = await computeDatabasePortableDigest(liveDb, true);
+
+    // 5. Fail-closed: create pre-restore safety snapshot of active live database
     safetySnapshotUri = await createPreRestoreSafetySnapshot(liveDb, context.header.schemaVersion);
 
-    // 5. Close active live database connection
+    // 6. Close active live database connection
     await closeDatabase();
 
-    // 6. Safe staged promotion on filesystem
+    // 7. Safe staged promotion on filesystem
     if (FileSystem.documentDirectory) {
       const sqliteDir = `${FileSystem.documentDirectory}SQLite/`;
       activeDbUri = getActiveDatabaseUri();
@@ -1154,18 +1246,23 @@ export async function executeRestore(
       backupOldDbUri = `${sqliteDir}barakah.db.old_${Date.now()}`;
 
       if (activeDbUri) {
-        // Destination manifest digest covering all portable financial tables
-        const manifestDigest = computeManifestDigest(context.manifest.tableChecksums);
+        if (!originalPortableDigest) {
+          throw new RestoreError('RESTORE_ERR_RECOVERY_REQUIRED', 'Original database identity was not captured.');
+        }
 
         // Persist restore journal before first filesystem move
         currentJournal = {
-          journalVersion: 1,
+          journalVersion: 2,
+          generation: 0,
           operationId,
           activePath: activeDbUri,
           stagingPath: stagingDbUri,
           recoveryOldPath: backupOldDbUri,
           safetySnapshotPath: safetySnapshotUri,
-          expectedDestinationChecksum: manifestDigest,
+          recoverySourcePath: null,
+          completionIdentity: null,
+          expectedOriginalPortableDigest: originalPortableDigest,
+          expectedDestinationPortableDigest: destinationPortableDigest,
           phase: 'initialized',
           updatedAtMs: Date.now(),
         };
@@ -1173,7 +1270,13 @@ export async function executeRestore(
 
         // Verify valid journal persisted before moving or deleting any database
         const journalCheck = await readRestoreJournalWithStatus();
-        if (!journalCheck.journal || journalCheck.journal.operationId !== operationId) {
+        if (
+          !journalCheck.journal ||
+          journalCheck.journal.operationId !== operationId ||
+          journalCheck.journal.generation !== 0 ||
+          journalCheck.journal.expectedOriginalPortableDigest !== originalPortableDigest ||
+          journalCheck.journal.expectedDestinationPortableDigest !== destinationPortableDigest
+        ) {
           throw new RestoreError(
             'RESTORE_ERR_PROMOTION_FAILED',
             'Failed to safely persist restore journal before promotion.'
@@ -1187,6 +1290,7 @@ export async function executeRestore(
         await FileSystem.deleteAsync(`${stagingDbUri}-shm`, { idempotent: true });
 
         // Boundary 1: Move active DB to recoveryOldPath
+        promotionStarted = true;
         const activeInfo = await FileSystem.getInfoAsync(activeDbUri);
         if (activeInfo.exists) {
           await FileSystem.moveAsync({
@@ -1194,30 +1298,34 @@ export async function executeRestore(
             to: backupOldDbUri,
           });
         }
-        currentJournal.phase = 'active_moved_to_old';
-        currentJournal.updatedAtMs = Date.now();
-        await writeRestoreJournal(currentJournal);
+        currentJournal = await transitionRestoreJournal(currentJournal, 'active_moved_to_old');
 
         // Boundary 2: Move staging DB to active DB path
         await FileSystem.moveAsync({
           from: stagingDbUri,
           to: activeDbUri,
         });
-        currentJournal.phase = 'staging_moved_to_active';
-        currentJournal.updatedAtMs = Date.now();
-        await writeRestoreJournal(currentJournal);
+        currentJournal = await transitionRestoreJournal(currentJournal, 'staging_moved_to_active');
       }
     }
 
-    // 7. Reopen active connection and run comprehensive post-activation verification
+    // 8. Reopen active connection and run comprehensive post-activation verification
     const newLiveDb = await getDatabase();
     await verifyActivatedDatabase(newLiveDb, context.manifest);
+    if ((await computeDatabasePortableDigest(newLiveDb)) !== destinationPortableDigest) {
+      throw new RestoreError(
+        'RESTORE_ERR_CHECKSUM_MISMATCH',
+        'Promoted database portable-data identity does not match the verified backup.'
+      );
+    }
+    await newLiveDb.getFirstAsync('SELECT 1;');
 
     // Boundary 3: Activation verified!
     if (currentJournal) {
-      currentJournal.phase = 'activation_verified';
-      currentJournal.updatedAtMs = Date.now();
-      await writeRestoreJournal(currentJournal);
+      currentJournal = await transitionRestoreJournal(currentJournal, 'activation_verified');
+      currentJournal = await transitionRestoreJournal(currentJournal, 'complete', {
+        completionIdentity: 'destination',
+      });
     }
 
     // 8. Activation confirmed: safely prune old recovery database only after confirmed verification
@@ -1226,8 +1334,6 @@ export async function executeRestore(
       backupOldDbUri = null;
     }
 
-    // Verify live DB reopened and accessible before clearing journal
-    await newLiveDb.getFirstAsync('SELECT 1;');
     await clearRestoreJournal();
     currentJournal = null;
   } catch (err: unknown) {
@@ -1241,8 +1347,8 @@ export async function executeRestore(
 
     const activationError = err instanceof Error ? err : new Error(String(err));
 
-    // If failure happened before moving active DB, clear journal and fail
-    if (!currentJournal || currentJournal.phase === 'initialized') {
+    // If failure happened before filesystem promotion, no recovery state is unresolved.
+    if (!currentJournal || !promotionStarted) {
       await clearRestoreJournal();
       if (err instanceof RestoreError) throw err;
       throw new RestoreError(
@@ -1251,54 +1357,29 @@ export async function executeRestore(
       );
     }
 
-    // Rollback: try restoring from backupOldDbUri or safetySnapshotUri
+    // Recover through the same identity-checked, journaled recovery state machine.
     let rollbackVerified = false;
     let manualRecoveryAvailable = false;
 
     if (activeDbUri && FileSystem.documentDirectory) {
       try {
         await closeDatabase();
-        await FileSystem.deleteAsync(activeDbUri, { idempotent: true });
-        await FileSystem.deleteAsync(`${activeDbUri}-wal`, { idempotent: true });
-        await FileSystem.deleteAsync(`${activeDbUri}-shm`, { idempotent: true });
-
-        if (backupOldDbUri) {
-          const backupInfo = await FileSystem.getInfoAsync(backupOldDbUri);
-          if (backupInfo.exists) {
-            await FileSystem.copyAsync({
-              from: backupOldDbUri,
-              to: activeDbUri,
-            });
-          } else if (safetySnapshotUri) {
-            await FileSystem.copyAsync({
-              from: safetySnapshotUri,
-              to: activeDbUri,
-            });
-          }
-        } else if (safetySnapshotUri) {
-          await FileSystem.copyAsync({
-            from: safetySnapshotUri,
-            to: activeDbUri,
-          });
-        }
-
-        // Reopen restored original database and verify integrity
-        const reopenedDb = await getDatabase();
-        const integrity = await reopenedDb.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check;');
-        const fkViolations = await reopenedDb.getAllAsync('PRAGMA foreign_key_check;');
-        if (integrity?.integrity_check === 'ok' && fkViolations.length === 0) {
-          rollbackVerified = true;
-        }
+        const recoveryState = await readRestoreJournalWithStatus();
+        const destinationWasVerified = Boolean(
+          recoveryState.journal &&
+          (recoveryState.journal.phase === 'activation_verified' ||
+            (recoveryState.journal.phase === 'complete' &&
+              recoveryState.journal.completionIdentity === 'destination'))
+        );
+        await recoverFromInterruptedRestore();
+        if (destinationWasVerified) return;
+        rollbackVerified = true;
       } catch {
         rollbackVerified = false;
       }
     }
 
     if (rollbackVerified) {
-      if (backupOldDbUri) {
-        try { await FileSystem.deleteAsync(backupOldDbUri, { idempotent: true }); } catch {}
-      }
-      await clearRestoreJournal();
       throw new RestoreError(
         'RESTORE_ERR_ROLLBACK_SUCCEEDED',
         `Database activation failed: ${activationError.message}. Original database was preserved, restored, and verified.`,

@@ -1,0 +1,16 @@
+{
+  "001_initial_schema.sql": "59e0570238482148e6b508db2f538be5500f73b820962ad7d8fb1d9551c4cca0",
+  "001_initial_schema.ts": "585db80b20ede707fc866c889b3d2329d92f36a25786175eac8369a6b135e9f8",
+  "002_categories_and_transfers.sql": "a7c9fcf5629a8446d1123215153f47e26528dfd97a5c0d78c7126d3614c4f31b",
+  "002_categories_and_transfers.ts": "88a30284937aaa996ded8e27c76edffe9225a9134ede170c45d91baf4842fb31",
+  "003_debts_and_counterparties.sql": "2a23d502bb0d02e83100a565d3480c45fd500dbed7c930fcc2213a916ceb0b24",
+  "003_debts_and_counterparties.ts": "18977e55bd497275356d6e93fc7c4a35fd06a8d53ce39620f2596290003199b9",
+  "004_debt_ledger_integrity_upgrade.sql": "6402232710cb59e676d9965de64597b3609d0f4aa418cb84f8e899da4637c4c5",
+  "004_debt_ledger_integrity_upgrade.ts": "fb9c7d805d2d0d692a3c979411e84bbfc82040529673909a8d3e58522c089252",
+  "005_backup_metadata_and_checksums.sql": "56db47a6cfbf22e252d6829f1c0d53ef106189a5bf328b658774506622b43efb",
+  "005_backup_metadata_and_checksums.ts": "b0167a9a1a40208e7d7465baea364e1add910788325103b02b41aefbf762ffc9",
+  "006_backup_integrity_hardening.sql": "642067ddbcef298ed76bd7c31fbfca2276c3ed56d5fe1ee7fd1379580c8658b3",
+  "006_backup_integrity_hardening.ts": "5e3f1c30a8760c90223f80e394ac2db75efefacbf7ddaf034c637cde0491941a",
+  "007_backup_export_statuses.sql": "4346c14642d6ade4596b1374e45104e102ec8c48d338f7f166eec99bb35def72",
+  "007_backup_export_statuses.ts": "184e69d8717996ec6192befc8ca715a3c4567982c2c49f3daf709143a2e47ec7"
+}

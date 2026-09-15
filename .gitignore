@@ -10,10 +10,24 @@ web-build/
 .env
 .env*.local
 
-# SQLite & Local DBs
-*.db
-*.db-journal
-*.sqlite
+# Phase 4 runtime backup and recovery artifacts (test fixtures remain visible)
+**/barakah.db
+**/barakah.db-journal
+**/barakah.db-wal
+**/barakah.db-shm
+**/*-wal
+**/*-shm
+**/barakah.db.old_*
+**/staging_restore_*.db
+**/staging_restore_*.db-wal
+**/staging_restore_*.db-shm
+**/pre_migration_v*.db
+**/pre_restore_safety_*.db
+**/barakah_backup_*.fmz
+**/barakah_restore_journal.json
+**/barakah_restore_journal.json.tmp
+**/barakah_restore_journal.json.bak
+**/restore_journal.json
 
 # OS generated files
 Thumbs.db

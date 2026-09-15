@@ -2,6 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { CANONICAL_MIGRATION_CHECKSUMS } from '../migrations/registry';
+import frozenSourceHashes from './fixtures/frozen-migration-source-hashes.json';
+
+export function hashFrozenMigrationSource(source: string): string {
+  // Normalize checkout line endings only. Whitespace and all meaningful source remain covered.
+  const normalized = source.replace(/\r\n?/g, '\n');
+  return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
 
 describe('Migration Canonical Checksums CI Verification', () => {
   const migrationsDir = path.resolve(__dirname, '../migrations');
@@ -24,5 +31,21 @@ describe('Migration Canonical Checksums CI Verification', () => {
 
       expect(actualChecksum).toBe(expectedChecksum);
     }
+  });
+
+  it('freezes every reference SQL and executable TypeScript migration from 001 through 007', () => {
+    for (const [fileName, expectedHash] of Object.entries(frozenSourceHashes)) {
+      const source = fs.readFileSync(path.join(migrationsDir, fileName), 'utf8');
+      expect(hashFrozenMigrationSource(source)).toBe(expectedHash);
+    }
+    expect(Object.keys(frozenSourceHashes)).toHaveLength(14);
+  });
+
+  it('detects a modified copied TypeScript migration body', () => {
+    const source = fs.readFileSync(path.join(migrationsDir, '007_backup_export_statuses.ts'), 'utf8');
+    const modifiedCopy = source.replace('version: 7', 'version: 7007');
+    expect(hashFrozenMigrationSource(modifiedCopy)).not.toBe(
+      frozenSourceHashes['007_backup_export_statuses.ts']
+    );
   });
 });

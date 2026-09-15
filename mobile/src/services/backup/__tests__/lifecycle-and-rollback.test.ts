@@ -14,6 +14,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as SQLite from 'expo-sqlite';
 import { DatabaseConnection } from '../../../db/types';
+import { computeTableChecksums } from '../serializer';
 
 jest.mock('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///mock/app/cache/',
@@ -243,6 +244,10 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
   });
 
   it('rolls back and restores original database when post-activation checks fail', async () => {
+    const emptyChecksums = computeTableChecksums({
+      accounts: [], categories: [], transactions: [], counterparties: [], debts: [],
+      debt_transactions: [], schema_migrations: [],
+    });
     const mockDb = {
       execAsync: jest.fn().mockResolvedValue(undefined),
       runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
@@ -292,7 +297,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
         appVersion: 1,
         schemaVersion: 7,
         rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
-        tableChecksums: { accounts: '', categories: '', transactions: '', counterparties: '', debts: '', debt_transactions: '', schema_migrations: '' },
+        tableChecksums: emptyChecksums,
         payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
       },
       preview: {

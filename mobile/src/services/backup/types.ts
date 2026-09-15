@@ -136,22 +136,28 @@ export type RestorePromotionPhase =
   | 'active_moved_to_old'
   | 'staging_moved_to_active'
   | 'activation_verified'
+  | 'rollback_candidate_verified'
+  | 'rollback_restored_verified'
   | 'complete';
 
 export interface RestoreJournal {
-  journalVersion: 1;
+  journalVersion: 2;
+  generation: number;
   operationId: string;
   activePath: string;
   stagingPath: string;
   recoveryOldPath: string;
   safetySnapshotPath: string | null;
-  expectedDestinationChecksum: string;
+  recoverySourcePath: string | null;
+  completionIdentity: 'original' | 'destination' | null;
+  expectedOriginalPortableDigest: string;
+  expectedDestinationPortableDigest: string;
   phase: RestorePromotionPhase;
   updatedAtMs: number;
 }
 
 export interface RestoreJournalEnvelope {
-  version: 1;
+  version: 2;
   checksum: string;
   payload: RestoreJournal;
 }
