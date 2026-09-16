@@ -6,4 +6,6 @@ export * from './categories';
 export * from './transactions';
 export * from './counterparties';
 export * from './debts';
+export * from './budgets';
+export * from './savings-goals';
 export * from './provider';

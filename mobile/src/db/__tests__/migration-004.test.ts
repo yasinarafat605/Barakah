@@ -705,10 +705,10 @@ describe('Migration 004: Debt Ledger Integrity Upgrade', () => {
         }))
       );
 
-      expect(summary.totalCashInflow).toBe(65000);
-      expect(summary.earnedIncome).toBe(0); // Protected: not earned income!
-      expect(summary.totalCashOutflow).toBe(50000);
-      expect(summary.ordinaryExpenses).toBe(0); // Protected: not ordinary consumption!
+      expect(summary.grossExternalCashInflow).toBe(65000);
+      expect(summary.incomeExcludingDebtPrincipal).toBe(0);
+      expect(summary.grossExternalCashOutflow).toBe(50000);
+      expect(summary.expenseExcludingDebtPrincipal).toBe(0);
       expect(summary.debtPrincipalInflow).toBe(65000);
       expect(summary.debtPrincipalOutflow).toBe(50000);
     });

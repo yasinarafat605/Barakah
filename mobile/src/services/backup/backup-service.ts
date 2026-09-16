@@ -172,6 +172,10 @@ export async function createEncryptedBackup(
       const counterparties = await txn.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
       const debts = await txn.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
       const debt_transactions = await txn.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
+      const budgets = await txn.getAllAsync<any>('SELECT * FROM budgets ORDER BY id ASC;');
+      const budget_categories = await txn.getAllAsync<any>('SELECT * FROM budget_categories ORDER BY id ASC;');
+      const savings_goals = await txn.getAllAsync<any>('SELECT * FROM savings_goals ORDER BY id ASC;');
+      const savings_goal_entries = await txn.getAllAsync<any>('SELECT * FROM savings_goal_entries ORDER BY id ASC;');
       const schema_migrations = await txn.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
 
       payloadData = {
@@ -181,6 +185,10 @@ export async function createEncryptedBackup(
         counterparties,
         debts,
         debt_transactions,
+        budgets,
+        budget_categories,
+        savings_goals,
+        savings_goal_entries,
         schema_migrations,
       };
     });
@@ -191,14 +199,16 @@ export async function createEncryptedBackup(
       payloadData.transactions.length +
       payloadData.counterparties.length +
       payloadData.debts.length +
-      payloadData.debt_transactions.length;
+      payloadData.debt_transactions.length +
+      payloadData.budgets.length + payloadData.budget_categories.length +
+      payloadData.savings_goals.length + payloadData.savings_goal_entries.length;
 
     // 2. Compute table checksums
     const tableChecksums = computeTableChecksums(payloadData);
 
     const now = Date.now();
     const manifest: BackupManifest = {
-      manifestVersion: 1,
+      manifestVersion: 2,
       createdAtMs: now,
       appVersion: APP_VERSION_CODE,
       schemaVersion: CURRENT_DATABASE_SCHEMA_VERSION,
@@ -209,6 +219,10 @@ export async function createEncryptedBackup(
         counterparties: payloadData.counterparties.length,
         debts: payloadData.debts.length,
         debt_transactions: payloadData.debt_transactions.length,
+        budgets: payloadData.budgets.length,
+        budget_categories: payloadData.budget_categories.length,
+        savings_goals: payloadData.savings_goals.length,
+        savings_goal_entries: payloadData.savings_goal_entries.length,
         schema_migrations: payloadData.schema_migrations.length,
       },
       tableChecksums,

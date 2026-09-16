@@ -475,3 +475,18 @@ A test suite specifically checks that no linked record inflates any total.
 - Every migration gets a test that builds the previous schema, seeds realistic data, runs
   the migration, and asserts the data survived. **A migration without a test does not ship.**
 - `PRAGMA foreign_keys = ON` on every connection. `PRAGMA journal_mode = WAL`.
+
+---
+
+## Phase 5 implemented planning schema (Migration 008)
+
+Migration 008 is the authoritative implemented model for the local planning foundation:
+
+- `transactions.occurred_on` preserves the user-facing `YYYY-MM-DD` civil date separately from the audit timestamp. Existing rows are backfilled from UTC, the only deterministic source available.
+- `accounts.archived_at` is nullable. Archived accounts remain readable but reject new money movement.
+- A budget's only archival state is `archived_at`: null means active and non-null means archived. `deleted_at` remains independent.
+- `budget_categories.budget_id` uses `ON DELETE RESTRICT`; planning history is never cascade-deleted.
+- Budget actuals derive from the transaction ledger. Debt-principal expense categories are excluded by default and included exactly once only when explicitly allocated. Debt income, transfers, and non-cash adjustments never consume the expense limit.
+- Savings allocations are signed `savings_goal_entries` using `allocation_only`, `existing_transfer`, or `owned_transfer` evidence modes.
+- The full unique index on non-null `savings_goal_entries.transaction_id` includes soft-deleted rows, so historical transfer evidence cannot be reassigned. Restore revives the original row.
+- Derived money aggregation and progress calculations use `BigInt` intermediates and fail outside JavaScript safe-integer boundaries.

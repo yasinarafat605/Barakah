@@ -35,6 +35,7 @@ export interface AccountRow {
   currency: string;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
 }
 
 export interface RawAccountWithBalanceRow extends AccountRow {
@@ -98,6 +99,7 @@ export interface TransactionRow {
   related_account_id: string | null;
   note: string | null;
   timestamp: number; // Unix ms
+  occurred_on: string; // Stable civil date, YYYY-MM-DD
   created_at: number; // Unix ms
   updated_at: number; // Unix ms
   deleted_at: number | null; // Unix ms when soft-deleted
@@ -125,6 +127,7 @@ export interface CreateTransactionInput {
   note?: string | null;
   timestamp?: number; // Unix ms
   occurredAt?: number; // Alias for timestamp
+  occurredOn?: string; // Stable user-selected civil date
 }
 
 export interface CreateTransferInput {
@@ -134,6 +137,7 @@ export interface CreateTransferInput {
   note?: string | null;
   timestamp?: number; // Unix ms
   occurredAt?: number; // Alias for timestamp
+  occurredOn?: string;
 }
 
 export interface TransactionFilters {
@@ -231,6 +235,7 @@ export interface CreateDebtInput {
   currency?: string;
   openingMode: DebtOpeningMode;
   openedAt?: number;
+  openedOn?: string;
   dueDate?: string | null; // Calendar date 'YYYY-MM-DD'
   note?: string | null;
   // If openingMode === 'new_with_cash':
@@ -291,6 +296,7 @@ export interface RecordRepaymentInput {
   amountMinor: number; // Positive integer minor units
   accountId: string; // Required: repayment requires cash transaction link
   occurredAt?: number;
+  occurredOn?: string;
   note?: string | null;
 }
 
@@ -300,5 +306,129 @@ export interface RecordAdjustmentInput {
   direction: 'increase' | 'decrease'; // 'increase' adds to balance owed, 'decrease' reduces balance owed
   note?: string | null;
   occurredAt?: number;
+  occurredOn?: string;
 }
 
+// ----------------------------------------------------------------------
+// Phase 5: Planning foundation
+// ----------------------------------------------------------------------
+
+export type BudgetPeriodType = 'monthly' | 'custom';
+export type BudgetRolloverPolicy = 'none' | 'unspent_only';
+
+export interface BudgetRow {
+  id: string;
+  name: string | null;
+  period_type: BudgetPeriodType;
+  starts_on: string;
+  ends_on: string;
+  currency: string;
+  account_id: string | null;
+  income_target: number | null;
+  expense_limit: number | null;
+  rollover_policy: BudgetRolloverPolicy;
+  rollover_from_budget_id: string | null;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+  archived_at: number | null;
+  deleted_at: number | null;
+}
+
+export interface BudgetCategoryRow {
+  id: string;
+  budget_id: string;
+  category_id: string;
+  amount: number;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface BudgetCategoryInput {
+  categoryId: string;
+  amountMinor: number;
+  sortOrder?: number;
+}
+
+export interface CreateBudgetInput {
+  name?: string | null;
+  periodType: BudgetPeriodType;
+  startsOn: string;
+  endsOn: string;
+  currency: string;
+  accountId?: string | null;
+  incomeTargetMinor?: number | null;
+  expenseLimitMinor?: number | null;
+  rolloverPolicy?: BudgetRolloverPolicy;
+  rolloverFromBudgetId?: string | null;
+  note?: string | null;
+  categories?: BudgetCategoryInput[];
+}
+
+export type SavingsGoalLifecycleStatus = 'active' | 'completed';
+export type SavingsGoalEntryType = 'contribution' | 'withdrawal';
+export type SavingsGoalLinkMode = 'allocation_only' | 'existing_transfer' | 'owned_transfer';
+
+export interface SavingsGoalRow {
+  id: string;
+  name: string;
+  preset_key: string | null;
+  target_amount: number;
+  currency: string;
+  target_date: string | null;
+  linked_account_id: string | null;
+  lifecycle_status: SavingsGoalLifecycleStatus;
+  completed_at: number | null;
+  archived_at: number | null;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface SavingsGoalEntryRow {
+  id: string;
+  goal_id: string;
+  entry_type: SavingsGoalEntryType;
+  amount: number;
+  link_mode: SavingsGoalLinkMode;
+  transaction_id: string | null;
+  occurred_at: number;
+  occurred_on: string;
+  note: string | null;
+  cascade_deleted_at: number | null;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface CreateSavingsGoalInput {
+  name: string;
+  presetKey?: string | null;
+  targetAmountMinor: number;
+  currency: string;
+  targetDate?: string | null;
+  linkedAccountId?: string | null;
+  note?: string | null;
+}
+
+export interface UpdateSavingsGoalInput {
+  name?: string;
+  presetKey?: string | null;
+  targetAmountMinor?: number;
+  currency?: string;
+  targetDate?: string | null;
+  linkedAccountId?: string | null;
+  note?: string | null;
+}
+
+export interface GoalEntryInput {
+  goalId: string;
+  entryType: SavingsGoalEntryType;
+  amountMinor: number;
+  occurredAt?: number;
+  occurredOn?: string;
+  note?: string | null;
+}

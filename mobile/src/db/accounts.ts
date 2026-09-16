@@ -7,7 +7,7 @@
  *   Never stored as a mutable running total.
  */
 
-import { getDatabase } from './client';
+import { getDatabase, runExclusiveTransaction } from './client';
 import {
   AccountType,
   AccountWithBalance,
@@ -70,6 +70,7 @@ export async function createAccount(
     currency,
     created_at: now,
     updated_at: now,
+    archived_at: null,
     current_balance_poisha: data.initialBalancePoisha,
     transaction_count: 0,
     balance: new Money(data.initialBalancePoisha, currency),
@@ -94,6 +95,7 @@ export async function getAccountsWithBalances(
        a.currency,
        a.created_at,
        a.updated_at,
+       a.archived_at,
        COALESCE(
          SUM(
            CASE
@@ -126,6 +128,7 @@ export async function getAccountsWithBalances(
       currency: row.currency,
       created_at: row.created_at,
       updated_at: row.updated_at,
+      archived_at: row.archived_at,
       current_balance_poisha: currentBalancePoisha,
       transaction_count: count,
       balance: new Money(currentBalancePoisha, row.currency),
@@ -151,6 +154,7 @@ export async function getAccountById(
        a.currency,
        a.created_at,
        a.updated_at,
+       a.archived_at,
        COALESCE(
          SUM(
            CASE
@@ -187,6 +191,7 @@ export async function getAccountById(
     currency: row.currency,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    archived_at: row.archived_at,
     current_balance_poisha: currentBalancePoisha,
     transaction_count: count,
     balance: new Money(currentBalancePoisha, row.currency),
@@ -211,3 +216,52 @@ export async function deleteAccount(
  */
 export const getAccounts = getAccountsWithBalances;
 
+export async function archiveAccount(
+  id: string,
+  confirmFundedGoals: boolean = false,
+  customDb?: DatabaseConnection
+): Promise<void> {
+  const db = customDb ?? (await getDatabase());
+  await runExclusiveTransaction(db, async (txn) => {
+    const account = await txn.getFirstAsync<{ archived_at: number | null }>(
+      'SELECT archived_at FROM accounts WHERE id = ?;',
+      id
+    );
+    if (!account) throw new Error(`Account not found: ${id}`);
+    if (account.archived_at !== null) return;
+
+    const entries = await txn.getAllAsync<{ amount: number; entry_type: string }>(
+      `SELECT e.amount, e.entry_type
+       FROM savings_goal_entries e
+       JOIN savings_goals g ON g.id = e.goal_id
+       WHERE g.linked_account_id = ? AND g.deleted_at IS NULL AND e.deleted_at IS NULL;`,
+      id
+    );
+    const allocated = entries.reduce(
+      (sum, row) => sum + BigInt(row.entry_type === 'contribution' ? row.amount : -row.amount),
+      0n
+    );
+    if (allocated > 0n && !confirmFundedGoals) {
+      throw new Error('ACCOUNT_ARCHIVE_REQUIRES_FUNDED_GOAL_CONFIRMATION');
+    }
+    const now = Date.now();
+    await txn.runAsync(
+      'UPDATE accounts SET archived_at = ?, updated_at = ? WHERE id = ?;',
+      now,
+      now,
+      id
+    );
+  });
+}
+
+export async function restoreArchivedAccount(
+  id: string,
+  customDb?: DatabaseConnection
+): Promise<void> {
+  const db = customDb ?? (await getDatabase());
+  await db.runAsync(
+    'UPDATE accounts SET archived_at = NULL, updated_at = ? WHERE id = ?;',
+    Date.now(),
+    id
+  );
+}

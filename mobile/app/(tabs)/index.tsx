@@ -81,21 +81,21 @@ export default function HomeScreen() {
 
         {/* Quick Summary Grid */}
         <View style={styles.grid}>
-          <View style={[styles.gridItem, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <TouchableOpacity onPress={()=>router.push('/transactions')} style={[styles.gridItem, { backgroundColor: theme.surface, borderColor: theme.border }]}>
             <Ionicons name="arrow-down-circle" size={22} color={theme.moneyIn} />
             <Text style={[styles.gridLabel, { color: theme.textMuted }]}>{t('nav.transactions')}</Text>
             <Text style={[styles.gridValue, { color: theme.text }]}>
               {new Money(0).format(currentLocale)}
             </Text>
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.gridItem, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <TouchableOpacity onPress={()=>router.push('/accounts')} style={[styles.gridItem, { backgroundColor: theme.surface, borderColor: theme.border }]}>
             <Ionicons name="wallet-outline" size={22} color={theme.primary} />
             <Text style={[styles.gridLabel, { color: theme.textMuted }]}>{t('nav.accounts')}</Text>
             <Text style={[styles.gridValue, { color: theme.text }]}>
               {new Money(0).format(currentLocale)}
             </Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
         {/* Debts & Liabilities Card */}

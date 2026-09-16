@@ -2,6 +2,14 @@
 
 ---
 
+## Revision 4 — 16 September 2026
+
+Implemented the Phase 5 planning foundation in Migration 008 without modifying released Migrations 001–007. Added stable transaction civil dates, account archival, budgets and category plans, reconciled ledger-derived budget actuals, `none`/`unspent_only` rollover, savings-goal allocation ledgers, permanent transfer-evidence reservation, account-wide availability and underfunding, manifest-v2 backup coverage with authenticated v1 upgrade restore, Plan navigation, and a fail-closed Islamic/Zakat readiness surface.
+
+Automated coverage includes schema-7 upgrade preservation, archival semantics, `ON DELETE RESTRICT`, historical evidence uniqueness, debt-category reconciliation, metadata disagreement, overlap and rollover, BigInt boundaries, goal deletion/restore behavior, and Phase 5 backup round trips. Emulator and physical-device QA remain manual gates and are not implied by Jest, web export, or Android prebuild.
+
+---
+
 ## Revision 3 — 12 September 2026
 
 **Trigger:** Official brand system upgrade and rebrand from "Friday Amanah" to "Barakah".  

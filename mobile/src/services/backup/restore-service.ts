@@ -50,6 +50,7 @@ import {
   validateManifestStructure,
   validateHeaderManifestConsistency,
   computeTableChecksums,
+  computeLegacyTableChecksums,
   canonicalJsonStringify,
 } from './serializer';
 import {
@@ -59,9 +60,14 @@ import {
   validateCounterpartyRow,
   validateDebtRow,
   validateDebtTransactionRow,
+  validateBudgetRow,
+  validateBudgetCategoryRow,
+  validateSavingsGoalRow,
+  validateSavingsGoalEntryRow,
   validateSchemaMigrationRow,
   validatePayloadInvariants,
 } from './validation';
+import { utcCivilDateFromTimestamp } from '../../domain/civil-date';
 import {
   createPreRestoreSafetySnapshot,
   getActiveDatabaseUri,
@@ -590,6 +596,10 @@ async function readPortablePayload(db: DatabaseConnection): Promise<BackupPayloa
     counterparties: await db.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;'),
     debts: await db.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;'),
     debt_transactions: await db.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;'),
+    budgets: await db.getAllAsync<any>('SELECT * FROM budgets ORDER BY id ASC;'),
+    budget_categories: await db.getAllAsync<any>('SELECT * FROM budget_categories ORDER BY id ASC;'),
+    savings_goals: await db.getAllAsync<any>('SELECT * FROM savings_goals ORDER BY id ASC;'),
+    savings_goal_entries: await db.getAllAsync<any>('SELECT * FROM savings_goal_entries ORDER BY id ASC;'),
     schema_migrations: await db.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;'),
   };
 }
@@ -837,14 +847,36 @@ export async function verifyAndPreviewBackup(
   // 7. Validate header-to-manifest consistency
   validateHeaderManifestConsistency(header, manifest);
 
-  // 8. Strict row validation without silent trimming
-  const accounts = manifest.payload.accounts.map((row, idx) => validateAccountRow(row, idx));
-  const categories = manifest.payload.categories.map((row, idx) => validateCategoryRow(row, idx));
-  const transactions = manifest.payload.transactions.map((row, idx) => validateTransactionRow(row, idx));
-  const counterparties = manifest.payload.counterparties.map((row, idx) => validateCounterpartyRow(row, idx));
-  const debts = manifest.payload.debts.map((row, idx) => validateDebtRow(row, idx));
-  const debt_transactions = manifest.payload.debt_transactions.map((row, idx) => validateDebtTransactionRow(row, idx));
-  const schema_migrations = manifest.payload.schema_migrations.map((row, idx) => validateSchemaMigrationRow(row, idx));
+  // 8. Verify legacy v1 checksums before adding deterministic Phase 5 defaults.
+  // Existing backups remain readable, while every restored staging database is
+  // normalized to the current portable-data shape.
+  const rawPayload = manifest.payload as unknown as Record<string, any[]>;
+  let legacyChecksums: Record<string, string> | null = null;
+  if (manifest.manifestVersion === 1) {
+    legacyChecksums = computeLegacyTableChecksums(rawPayload);
+    rawPayload.accounts = rawPayload.accounts.map((row) => ({ ...row, archived_at: null }));
+    rawPayload.transactions = rawPayload.transactions.map((row) => ({
+      ...row,
+      occurred_on: utcCivilDateFromTimestamp(row.timestamp),
+    }));
+    rawPayload.budgets = [];
+    rawPayload.budget_categories = [];
+    rawPayload.savings_goals = [];
+    rawPayload.savings_goal_entries = [];
+  }
+
+  // 9. Strict row validation without silent normalization for current backups.
+  const accounts = rawPayload.accounts.map((row, idx) => validateAccountRow(row, idx));
+  const categories = rawPayload.categories.map((row, idx) => validateCategoryRow(row, idx));
+  const transactions = rawPayload.transactions.map((row, idx) => validateTransactionRow(row, idx));
+  const counterparties = rawPayload.counterparties.map((row, idx) => validateCounterpartyRow(row, idx));
+  const debts = rawPayload.debts.map((row, idx) => validateDebtRow(row, idx));
+  const debt_transactions = rawPayload.debt_transactions.map((row, idx) => validateDebtTransactionRow(row, idx));
+  const budgets = rawPayload.budgets.map((row, idx) => validateBudgetRow(row, idx));
+  const budget_categories = rawPayload.budget_categories.map((row, idx) => validateBudgetCategoryRow(row, idx));
+  const savings_goals = rawPayload.savings_goals.map((row, idx) => validateSavingsGoalRow(row, idx));
+  const savings_goal_entries = rawPayload.savings_goal_entries.map((row, idx) => validateSavingsGoalEntryRow(row, idx));
+  const schema_migrations = rawPayload.schema_migrations.map((row, idx) => validateSchemaMigrationRow(row, idx));
 
   const validatedPayload: BackupPayloadData = {
     accounts,
@@ -853,15 +885,29 @@ export async function verifyAndPreviewBackup(
     counterparties,
     debts,
     debt_transactions,
+    budgets,
+    budget_categories,
+    savings_goals,
+    savings_goal_entries,
     schema_migrations,
   };
 
-  // 9. Cross-table invariants & relations validation
+  // 10. Cross-table invariants & relations validation
   validatePayloadInvariants(validatedPayload);
 
-  // 10. Table checksum verification
+  if (legacyChecksums) {
+    const sourceChecksums = manifest.tableChecksums as unknown as Record<string, string>;
+    for (const [table, checksum] of Object.entries(legacyChecksums)) {
+      if (sourceChecksums[table] !== checksum) {
+        throw new RestoreError('RESTORE_ERR_CHECKSUM_MISMATCH', `Table checksum mismatch on '${table}'. Backup payload may have been corrupted.`);
+      }
+    }
+  }
+
+  // 11. Current-manifest table checksum verification. Legacy source checksums
+  // were verified above before normalization.
   const computedChecksums = computeTableChecksums(validatedPayload);
-  for (const table of Object.keys(computedChecksums) as (keyof typeof computedChecksums)[]) {
+  if (manifest.manifestVersion === 2) for (const table of Object.keys(computedChecksums) as (keyof typeof computedChecksums)[]) {
     if (computedChecksums[table] !== manifest.tableChecksums[table]) {
       throw new RestoreError(
         'RESTORE_ERR_CHECKSUM_MISMATCH',
@@ -878,6 +924,10 @@ export async function verifyAndPreviewBackup(
     counterparties: 0,
     debts: 0,
     debt_transactions: 0,
+    budgets: 0,
+    budget_categories: 0,
+    savings_goals: 0,
+    savings_goal_entries: 0,
   };
 
   try {
@@ -887,6 +937,10 @@ export async function verifyAndPreviewBackup(
     const cpCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM counterparties;');
     const dCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM debts;');
     const dtCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM debt_transactions;');
+    const bCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM budgets;');
+    const bcCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM budget_categories;');
+    const gCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM savings_goals;');
+    const geCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM savings_goal_entries;');
 
     liveRowCounts = {
       accounts: aCount?.c ?? 0,
@@ -895,6 +949,10 @@ export async function verifyAndPreviewBackup(
       counterparties: cpCount?.c ?? 0,
       debts: dCount?.c ?? 0,
       debt_transactions: dtCount?.c ?? 0,
+      budgets: bCount?.c ?? 0,
+      budget_categories: bcCount?.c ?? 0,
+      savings_goals: gCount?.c ?? 0,
+      savings_goal_entries: geCount?.c ?? 0,
     };
   } catch {
     // Live counts query failure is non-fatal for preview
@@ -911,13 +969,28 @@ export async function verifyAndPreviewBackup(
       counterparties: counterparties.length,
       debts: debts.length,
       debt_transactions: debt_transactions.length,
+      budgets: budgets.length,
+      budget_categories: budget_categories.length,
+      savings_goals: savings_goals.length,
+      savings_goal_entries: savings_goal_entries.length,
     },
     liveRowCounts,
   };
 
   return {
     header,
-    manifest: { ...manifest, payload: validatedPayload },
+    manifest: {
+      ...manifest,
+      rowCounts: {
+        accounts: accounts.length, categories: categories.length, transactions: transactions.length,
+        counterparties: counterparties.length, debts: debts.length, debt_transactions: debt_transactions.length,
+        budgets: budgets.length, budget_categories: budget_categories.length,
+        savings_goals: savings_goals.length, savings_goal_entries: savings_goal_entries.length,
+        schema_migrations: schema_migrations.length,
+      },
+      tableChecksums: computedChecksums,
+      payload: validatedPayload,
+    },
     preview,
     envelopeBytes,
   };
@@ -943,14 +1016,15 @@ export async function populateAndVerifyStagingDatabase(
     // Accounts
     for (const a of p.accounts) {
       await txn.runAsync(
-        'INSERT INTO accounts (id, name, type, initial_balance, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?);',
+        'INSERT INTO accounts (id, name, type, initial_balance, currency, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);',
         a.id,
         a.name,
         a.type,
         a.initial_balance,
         a.currency,
         a.created_at,
-        a.updated_at
+        a.updated_at,
+        a.archived_at
       );
     }
 
@@ -1013,7 +1087,7 @@ export async function populateAndVerifyStagingDatabase(
     // Transactions
     for (const t of p.transactions) {
       await txn.runAsync(
-        'INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+        'INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
         t.id,
         t.account_id,
         t.category_id,
@@ -1024,6 +1098,7 @@ export async function populateAndVerifyStagingDatabase(
         t.related_account_id,
         t.note,
         t.timestamp,
+        t.occurred_on,
         t.created_at,
         t.updated_at,
         t.deleted_at
@@ -1044,6 +1119,35 @@ export async function populateAndVerifyStagingDatabase(
         dt.created_at,
         dt.updated_at,
         dt.deleted_at
+      );
+    }
+
+    for (const b of p.budgets) {
+      await txn.runAsync(
+        'INSERT INTO budgets (id, name, period_type, starts_on, ends_on, currency, account_id, income_target, expense_limit, rollover_policy, rollover_from_budget_id, note, created_at, updated_at, archived_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+        b.id, b.name, b.period_type, b.starts_on, b.ends_on, b.currency, b.account_id,
+        b.income_target, b.expense_limit, b.rollover_policy, b.rollover_from_budget_id,
+        b.note, b.created_at, b.updated_at, b.archived_at, b.deleted_at
+      );
+    }
+    for (const bc of p.budget_categories) {
+      await txn.runAsync(
+        'INSERT INTO budget_categories (id, budget_id, category_id, amount, sort_order, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);',
+        bc.id, bc.budget_id, bc.category_id, bc.amount, bc.sort_order, bc.created_at, bc.updated_at, bc.deleted_at
+      );
+    }
+    for (const g of p.savings_goals) {
+      await txn.runAsync(
+        'INSERT INTO savings_goals (id, name, preset_key, target_amount, currency, target_date, linked_account_id, lifecycle_status, completed_at, archived_at, note, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+        g.id, g.name, g.preset_key, g.target_amount, g.currency, g.target_date, g.linked_account_id,
+        g.lifecycle_status, g.completed_at, g.archived_at, g.note, g.created_at, g.updated_at, g.deleted_at
+      );
+    }
+    for (const e of p.savings_goal_entries) {
+      await txn.runAsync(
+        'INSERT INTO savings_goal_entries (id, goal_id, entry_type, amount, link_mode, transaction_id, occurred_at, occurred_on, note, cascade_deleted_at, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+        e.id, e.goal_id, e.entry_type, e.amount, e.link_mode, e.transaction_id, e.occurred_at,
+        e.occurred_on, e.note, e.cascade_deleted_at, e.created_at, e.updated_at, e.deleted_at
       );
     }
   });
@@ -1104,6 +1208,10 @@ async function verifyActivatedDatabase(
   const cpCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM counterparties;');
   const dCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM debts;');
   const dtCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM debt_transactions;');
+  const bCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM budgets;');
+  const bcCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM budget_categories;');
+  const gCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM savings_goals;');
+  const geCount = await newLiveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM savings_goal_entries;');
 
   if (
     aCount?.c !== manifest.rowCounts.accounts ||
@@ -1111,7 +1219,11 @@ async function verifyActivatedDatabase(
     tCount?.c !== manifest.rowCounts.transactions ||
     cpCount?.c !== manifest.rowCounts.counterparties ||
     dCount?.c !== manifest.rowCounts.debts ||
-    dtCount?.c !== manifest.rowCounts.debt_transactions
+    dtCount?.c !== manifest.rowCounts.debt_transactions ||
+    bCount?.c !== manifest.rowCounts.budgets ||
+    bcCount?.c !== manifest.rowCounts.budget_categories ||
+    gCount?.c !== manifest.rowCounts.savings_goals ||
+    geCount?.c !== manifest.rowCounts.savings_goal_entries
   ) {
     throw new Error('Activated database row counts do not match manifest expectations.');
   }
@@ -1123,6 +1235,10 @@ async function verifyActivatedDatabase(
   const counterparties = await newLiveDb.getAllAsync<any>('SELECT * FROM counterparties ORDER BY id ASC;');
   const debts = await newLiveDb.getAllAsync<any>('SELECT * FROM debts ORDER BY id ASC;');
   const debt_transactions = await newLiveDb.getAllAsync<any>('SELECT * FROM debt_transactions ORDER BY id ASC;');
+  const budgets = await newLiveDb.getAllAsync<any>('SELECT * FROM budgets ORDER BY id ASC;');
+  const budget_categories = await newLiveDb.getAllAsync<any>('SELECT * FROM budget_categories ORDER BY id ASC;');
+  const savings_goals = await newLiveDb.getAllAsync<any>('SELECT * FROM savings_goals ORDER BY id ASC;');
+  const savings_goal_entries = await newLiveDb.getAllAsync<any>('SELECT * FROM savings_goal_entries ORDER BY id ASC;');
   const destMigrations = await newLiveDb.getAllAsync<any>('SELECT * FROM schema_migrations ORDER BY version ASC;');
 
   const livePayload: BackupPayloadData = {
@@ -1132,6 +1248,10 @@ async function verifyActivatedDatabase(
     counterparties,
     debts,
     debt_transactions,
+    budgets,
+    budget_categories,
+    savings_goals,
+    savings_goal_entries,
     schema_migrations: destMigrations,
   };
 

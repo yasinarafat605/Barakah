@@ -15,13 +15,17 @@ import {
   CounterpartyRow,
   DebtRow,
   DebtTransactionRow,
+  BudgetRow,
+  BudgetCategoryRow,
+  SavingsGoalRow,
+  SavingsGoalEntryRow,
 } from '../../db/types';
 
 export const BACKUP_MAGIC_BYTES = new Uint8Array([0x42, 0x4D, 0x5A, 0x31]); // 'BMZ1'
 export const BACKUP_FORMAT_VERSION = 1;
 export const MIN_RESTORABLE_SCHEMA_VERSION = 4;
-export const MAX_RESTORABLE_SCHEMA_VERSION = 7;
-export const CURRENT_DATABASE_SCHEMA_VERSION = 7;
+export const MAX_RESTORABLE_SCHEMA_VERSION = 8;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 8;
 export const APP_VERSION_CODE = 1; // 1.0.0
 
 export const HEADER_SIZE_BYTES = 60;
@@ -89,6 +93,10 @@ export interface BackupPayloadData {
   counterparties: CounterpartyRow[];
   debts: DebtRow[];
   debt_transactions: DebtTransactionRow[];
+  budgets: BudgetRow[];
+  budget_categories: BudgetCategoryRow[];
+  savings_goals: SavingsGoalRow[];
+  savings_goal_entries: SavingsGoalEntryRow[];
   schema_migrations: SchemaMigrationRow[];
 }
 
@@ -99,11 +107,15 @@ export interface TableChecksums {
   counterparties: string;
   debts: string;
   debt_transactions: string;
+  budgets: string;
+  budget_categories: string;
+  savings_goals: string;
+  savings_goal_entries: string;
   schema_migrations: string;
 }
 
 export interface BackupManifest {
-  manifestVersion: number; // 1
+  manifestVersion: 1 | 2;
   createdAtMs: number;
   appVersion: number;
   schemaVersion: number;
@@ -114,6 +126,10 @@ export interface BackupManifest {
     counterparties: number;
     debts: number;
     debt_transactions: number;
+    budgets: number;
+    budget_categories: number;
+    savings_goals: number;
+    savings_goal_entries: number;
     schema_migrations: number;
   };
   tableChecksums: TableChecksums;
@@ -127,6 +143,10 @@ export const PORTABLE_FINANCIAL_TABLES = [
   'counterparties',
   'debts',
   'debt_transactions',
+  'budgets',
+  'budget_categories',
+  'savings_goals',
+  'savings_goal_entries',
 ] as const;
 
 export type PortableFinancialTable = (typeof PORTABLE_FINANCIAL_TABLES)[number];
@@ -209,6 +229,10 @@ export interface RestorePreview {
     counterparties: number;
     debts: number;
     debt_transactions: number;
+    budgets: number;
+    budget_categories: number;
+    savings_goals: number;
+    savings_goal_entries: number;
   };
   liveRowCounts: {
     accounts: number;
@@ -217,6 +241,10 @@ export interface RestorePreview {
     counterparties: number;
     debts: number;
     debt_transactions: number;
+    budgets: number;
+    budget_categories: number;
+    savings_goals: number;
+    savings_goal_entries: number;
   };
 }
 

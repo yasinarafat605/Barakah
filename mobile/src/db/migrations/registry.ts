@@ -10,4 +10,5 @@ export const CANONICAL_MIGRATION_CHECKSUMS: Record<number, string> = {
   5: '0d94b86ce2c88b3cde228624342bac28742a96c5dea7eecea735907c832585bd',
   6: 'fa2d22a9ebf7d7f180f95be7d3714417d9f7554fb10d2220b3bde77342f3407f',
   7: 'accc5797631eb3e0a89c857cf871a0eac7b11b8966a6eba92b5070ce823ed882',
+  8: 'a9f8ee7180bcfe71a0470ea26c959204a7395991abf148bac42d235d9a2f9aca',
 };

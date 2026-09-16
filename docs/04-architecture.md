@@ -213,3 +213,13 @@ Auto-lock default [RECOMMENDED]: 2 minutes. Options: immediately, 1, 2, 5, 15 mi
 | APK size | < 40 MB | No unused native modules; no bundled fonts beyond two weights per family |
 
 Indexes are defined in doc 05 and must exist before Phase 2 is signed off.
+
+---
+
+## Phase 5 planning and recovery boundary
+
+Planning repositories are local-first projections over transaction and debt ledgers. They do not store mutable actual balances. Budget and goal writes use Expo SQLite exclusive transaction callbacks and bound parameters.
+
+Backup manifest v2 adds planning tables, account archival, and stable transaction civil dates to the portable identity. Restore still accepts authenticated manifest v1 backups for schemas 4–7: it verifies original checksums, derives only deterministic Phase 5 defaults, migrates an isolated staging database to schema 8, and verifies the complete destination identity before activation.
+
+Zakat remains fail closed. The Islamic surface reports missing readiness inputs and produces no estimate, percentage, or inferred religious ruling.

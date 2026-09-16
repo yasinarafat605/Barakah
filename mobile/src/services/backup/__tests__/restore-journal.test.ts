@@ -32,6 +32,10 @@ const EMPTY_TABLE_CHECKSUMS = computeTableChecksums({
   counterparties: [],
   debts: [],
   debt_transactions: [],
+  budgets: [],
+  budget_categories: [],
+  savings_goals: [],
+  savings_goal_entries: [],
   schema_migrations: [],
 });
 const EMPTY_PORTABLE_DIGEST = computeManifestDigest(EMPTY_TABLE_CHECKSUMS);
@@ -175,7 +179,7 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
     const destMigrations = await stagingDb.getAllAsync<{ version: number; checksum: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
     );
-    expect(destMigrations.length).toBe(7);
+    expect(destMigrations.length).toBe(8);
     for (const m of destMigrations) {
       expect(m.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[m.version]);
     }
@@ -196,6 +200,10 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
         counterparties: 1,
         debts: 0,
         debt_transactions: 0,
+        budgets: 0,
+        budget_categories: 0,
+        savings_goals: 0,
+        savings_goal_entries: 0,
         schema_migrations: 4,
       },
       tableChecksums: {
@@ -205,6 +213,10 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
         counterparties: '',
         debts: '',
         debt_transactions: '',
+        budgets: '',
+        budget_categories: '',
+        savings_goals: '',
+        savings_goal_entries: '',
         schema_migrations: 'source_v4_ledger_checksum',
       },
       payload: {
@@ -214,6 +226,10 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
         counterparties: [{ id: 'cp_v4', name: 'Legacy Person', type: 'person', phone: null, email: null, note: null, avatar_color: null, is_archived: 0, created_at: 1000, updated_at: 1000 }],
         debts: [],
         debt_transactions: [],
+        budgets: [],
+        budget_categories: [],
+        savings_goals: [],
+        savings_goal_entries: [],
         schema_migrations: [
           { version: 1, name: '001_initial_schema', applied_at: 1000, checksum: null },
           { version: 2, name: '002_categories_and_transfers', applied_at: 1001, checksum: null },
@@ -223,14 +239,14 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
       },
     };
 
-    // Staging population applies migrations 1..7 and inserts data
+    // Staging population applies migrations 1..8 and inserts data
     await populateAndVerifyStagingDatabase(stagingDb4, mockManifestV4 as any);
 
-    // Target database is now at schema 7
+    // Target database is now at schema 8
     const cols = await stagingDb4.getAllAsync<{ name: string }>('PRAGMA table_info(backup_history);');
     expect(cols.length).toBeGreaterThan(0); // backup_history table created by migration 005
     const rows = await stagingDb4.getAllAsync<{ version: number; checksum: string }>('SELECT version, checksum FROM schema_migrations;');
-    expect(rows.length).toBe(7);
+    expect(rows.length).toBe(8);
     expect(rows.find(r => r.version === 7)?.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[7]);
 
     // 2. Emulate a schema-5 backup manifest
@@ -250,7 +266,7 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
 
     await populateAndVerifyStagingDatabase(stagingDb5, mockManifestV5 as any);
     const rows5 = await stagingDb5.getAllAsync<{ version: number }>('SELECT version FROM schema_migrations;');
-    expect(rows5.length).toBe(7);
+    expect(rows5.length).toBe(8);
   });
 
   it('Migration-ledger policy: verifies destination ledger against canonical checksums while comparing financial tables independently', async () => {
@@ -271,6 +287,10 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
       counterparties: [],
       debts: [],
       debt_transactions: [],
+      budgets: [],
+      budget_categories: [],
+      savings_goals: [],
+      savings_goal_entries: [],
       schema_migrations: [],
     };
     const checksums = computeTableChecksums(payload as any);
@@ -397,6 +417,10 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
       counterparties: [],
       debts: [],
       debt_transactions: [],
+      budgets: [],
+      budget_categories: [],
+      savings_goals: [],
+      savings_goal_entries: [],
       schema_migrations: [],
     });
     const emptyManifestDigest = computeManifestDigest(emptyChecksums);
@@ -486,16 +510,16 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
         createdAtMs: Date.now(),
         appVersion: 1,
         schemaVersion: 7,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0, schema_migrations: 0 },
         tableChecksums: EMPTY_TABLE_CHECKSUMS,
-        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
+        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], budgets: [], budget_categories: [], savings_goals: [], savings_goal_entries: [], schema_migrations: [] },
       },
       preview: {
         createdAtMs: Date.now(),
         schemaVersion: 7,
         appVersion: 1,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
-        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
+        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
       },
       envelopeBytes: new Uint8Array(100),
     };
@@ -958,16 +982,16 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
         createdAtMs: Date.now(),
         appVersion: 1,
         schemaVersion: 7,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0, schema_migrations: 0 },
         tableChecksums: EMPTY_TABLE_CHECKSUMS,
-        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
+        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], budgets: [], budget_categories: [], savings_goals: [], savings_goal_entries: [], schema_migrations: [] },
       },
       preview: {
         createdAtMs: Date.now(),
         schemaVersion: 7,
         appVersion: 1,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
-        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
+        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
       },
       envelopeBytes: new Uint8Array(100),
     };
@@ -1158,14 +1182,14 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
       },
       manifest: {
         manifestVersion: 1, createdAtMs: Date.now(), appVersion: 1, schemaVersion: 7,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0, schema_migrations: 0 },
         tableChecksums: EMPTY_TABLE_CHECKSUMS,
-        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
+        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], budgets: [], budget_categories: [], savings_goals: [], savings_goal_entries: [], schema_migrations: [] },
       },
       preview: {
         createdAtMs: Date.now(), schemaVersion: 7, appVersion: 1,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
-        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
+        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
       },
       envelopeBytes: new Uint8Array(100),
     };
@@ -1203,7 +1227,7 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
   it('Wrong but structurally valid original candidate rejected: preserves the old database and journal', async () => {
     const expectedPayload = {
       accounts: [{ id: 'expected-original' } as any], categories: [], transactions: [],
-      counterparties: [], debts: [], debt_transactions: [], schema_migrations: [],
+      counterparties: [], debts: [], debt_transactions: [], budgets: [], budget_categories: [], savings_goals: [], savings_goal_entries: [], schema_migrations: [],
     };
     const journal = makeJournal('active_moved_to_old', {
       expectedOriginalPortableDigest: computeManifestDigest(computeTableChecksums(expectedPayload)),

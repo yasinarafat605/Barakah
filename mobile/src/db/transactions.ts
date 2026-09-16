@@ -12,6 +12,7 @@
 import { getDatabase, runExclusiveTransaction } from './client';
 import { getAccountById } from './accounts';
 import { getCategoryById } from './categories';
+import { assertCivilDate, localCivilDateFromTimestamp } from '../domain/civil-date';
 import {
   CreateTransactionInput,
   CreateTransferInput,
@@ -19,7 +20,10 @@ import {
   TransactionFilters,
   TransactionRow,
   TransactionWithDetails,
+  SavingsGoalEntryRow,
+  SavingsGoalRow,
 } from './types';
+import { deriveGoalProgress } from '../domain/savings-goal';
 
 function generateTxId(prefix: string): string {
   const ts = Date.now().toString(36);
@@ -31,6 +35,44 @@ function generateTransferId(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).substring(2, 7);
   return `tr_${ts}_${rand}`;
+}
+
+export async function createTransferInTransaction(
+  input: CreateTransferInput,
+  db: DatabaseConnection
+): Promise<{ sourceTransaction: TransactionRow; destinationTransaction: TransactionRow; transferId: string }> {
+  if (input.sourceAccountId === input.destinationAccountId) throw new Error('Source and destination accounts must be different for a transfer.');
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) throw new Error('Transfer amount must be a positive safe integer.');
+  const source = await getAccountById(input.sourceAccountId, db);
+  const destination = await getAccountById(input.destinationAccountId, db);
+  if (!source || !destination) throw new Error('Transfer account not found.');
+  if (source.archived_at !== null || destination.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
+  if (source.currency !== destination.currency) throw new Error('Cross-currency transfers are not supported.');
+  const transferId = generateTransferId();
+  const sourceId = generateTxId('tr_src');
+  const destinationId = generateTxId('tr_dst');
+  const now = Date.now();
+  const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
+  assertCivilDate(occurredOn, 'occurredOn');
+  const note = input.note?.trim() || null;
+  await db.runAsync(
+    `INSERT INTO transactions (id,account_id,category_id,amount,type,transfer_id,transfer_role,related_account_id,note,timestamp,occurred_on,created_at,updated_at,deleted_at)
+     VALUES (?,?,NULL,?,'transfer',?,'source',?,?,?,?,?,?,NULL);`,
+    sourceId, input.sourceAccountId, input.amountMinor, transferId, input.destinationAccountId,
+    note, timestamp, occurredOn, now, now
+  );
+  await db.runAsync(
+    `INSERT INTO transactions (id,account_id,category_id,amount,type,transfer_id,transfer_role,related_account_id,note,timestamp,occurred_on,created_at,updated_at,deleted_at)
+     VALUES (?,?,NULL,?,'transfer',?,'destination',?,?,?,?,?,?,NULL);`,
+    destinationId, input.destinationAccountId, input.amountMinor, transferId, input.sourceAccountId,
+    note, timestamp, occurredOn, now, now
+  );
+  return {
+    transferId,
+    sourceTransaction: { id: sourceId, account_id: input.sourceAccountId, category_id: null, amount: input.amountMinor, type: 'transfer', transfer_id: transferId, transfer_role: 'source', related_account_id: input.destinationAccountId, note, timestamp, occurred_on: occurredOn, created_at: now, updated_at: now, deleted_at: null },
+    destinationTransaction: { id: destinationId, account_id: input.destinationAccountId, category_id: null, amount: input.amountMinor, type: 'transfer', transfer_id: transferId, transfer_role: 'destination', related_account_id: input.sourceAccountId, note, timestamp, occurred_on: occurredOn, created_at: now, updated_at: now, deleted_at: null },
+  };
 }
 
 /**
@@ -50,6 +92,7 @@ export async function createIncomeTransaction(
   if (!account) {
     throw new Error(`Account not found: ${input.accountId}`);
   }
+  if (account.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
 
   const category = await getCategoryById(input.categoryId, db);
   if (!category) {
@@ -65,17 +108,20 @@ export async function createIncomeTransaction(
   const id = generateTxId('inc');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
+  assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;
 
   await db.runAsync(
-    `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, 'income', NULL, NULL, NULL, ?, ?, ?, ?, NULL);`,
+    `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, 'income', NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL);`,
     id,
     input.accountId,
     input.categoryId,
     input.amountMinor,
     note,
     timestamp,
+    occurredOn,
     now,
     now
   );
@@ -91,6 +137,7 @@ export async function createIncomeTransaction(
     related_account_id: null,
     note,
     timestamp,
+    occurred_on: occurredOn,
     created_at: now,
     updated_at: now,
     deleted_at: null,
@@ -114,6 +161,7 @@ export async function createExpenseTransaction(
   if (!account) {
     throw new Error(`Account not found: ${input.accountId}`);
   }
+  if (account.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
 
   const category = await getCategoryById(input.categoryId, db);
   if (!category) {
@@ -129,17 +177,20 @@ export async function createExpenseTransaction(
   const id = generateTxId('exp');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
+  assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;
 
   await db.runAsync(
-    `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, 'expense', NULL, NULL, NULL, ?, ?, ?, ?, NULL);`,
+    `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, 'expense', NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL);`,
     id,
     input.accountId,
     input.categoryId,
     input.amountMinor,
     note,
     timestamp,
+    occurredOn,
     now,
     now
   );
@@ -155,6 +206,7 @@ export async function createExpenseTransaction(
     related_account_id: null,
     note,
     timestamp,
+    occurred_on: occurredOn,
     created_at: now,
     updated_at: now,
     deleted_at: null,
@@ -193,11 +245,13 @@ export async function createTransfer(
   if (!sourceAccount) {
     throw new Error(`Source account not found: ${input.sourceAccountId}`);
   }
+  if (sourceAccount.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
 
   const destinationAccount = await getAccountById(input.destinationAccountId, db);
   if (!destinationAccount) {
     throw new Error(`Destination account not found: ${input.destinationAccountId}`);
   }
+  if (destinationAccount.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
 
   // Enforce currency compatibility (Milestone 2, Correction 5)
   if (sourceAccount.currency !== destinationAccount.currency) {
@@ -211,6 +265,8 @@ export async function createTransfer(
   const destTxId = generateTxId('tr_dst');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
+  assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;
 
   await runExclusiveTransaction(db, async (txn) => {
@@ -218,8 +274,8 @@ export async function createTransfer(
     await txn.runAsync(
       `INSERT INTO transactions (
          id, account_id, category_id, amount, type, transfer_id, transfer_role,
-         related_account_id, note, timestamp, created_at, updated_at, deleted_at
-       ) VALUES (?, ?, NULL, ?, 'transfer', ?, 'source', ?, ?, ?, ?, ?, NULL);`,
+         related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at
+       ) VALUES (?, ?, NULL, ?, 'transfer', ?, 'source', ?, ?, ?, ?, ?, ?, NULL);`,
       sourceTxId,
       input.sourceAccountId,
       input.amountMinor,
@@ -227,6 +283,7 @@ export async function createTransfer(
       input.destinationAccountId,
       note,
       timestamp,
+      occurredOn,
       now,
       now
     );
@@ -235,8 +292,8 @@ export async function createTransfer(
     await txn.runAsync(
       `INSERT INTO transactions (
          id, account_id, category_id, amount, type, transfer_id, transfer_role,
-         related_account_id, note, timestamp, created_at, updated_at, deleted_at
-       ) VALUES (?, ?, NULL, ?, 'transfer', ?, 'destination', ?, ?, ?, ?, ?, NULL);`,
+         related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at
+       ) VALUES (?, ?, NULL, ?, 'transfer', ?, 'destination', ?, ?, ?, ?, ?, ?, NULL);`,
       destTxId,
       input.destinationAccountId,
       input.amountMinor,
@@ -244,6 +301,7 @@ export async function createTransfer(
       input.sourceAccountId,
       note,
       timestamp,
+      occurredOn,
       now,
       now
     );
@@ -260,6 +318,7 @@ export async function createTransfer(
     related_account_id: input.destinationAccountId,
     note,
     timestamp,
+    occurred_on: occurredOn,
     created_at: now,
     updated_at: now,
     deleted_at: null,
@@ -276,6 +335,7 @@ export async function createTransfer(
     related_account_id: input.sourceAccountId,
     note,
     timestamp,
+    occurred_on: occurredOn,
     created_at: now,
     updated_at: now,
     deleted_at: null,
@@ -345,6 +405,7 @@ export async function getTransactions(
       t.related_account_id,
       t.note,
       t.timestamp,
+      t.occurred_on,
       t.created_at,
       t.updated_at,
       t.deleted_at,
@@ -441,6 +502,7 @@ export async function getTransactionById(
       t.related_account_id,
       t.note,
       t.timestamp,
+      t.occurred_on,
       t.created_at,
       t.updated_at,
       t.deleted_at,
@@ -469,7 +531,8 @@ export async function getTransactionById(
  */
 export async function softDeleteTransaction(
   id: string,
-  customDb?: DatabaseConnection
+  customDb?: DatabaseConnection,
+  options: { confirmExistingGoalLink?: boolean } = {}
 ): Promise<boolean> {
   const db = customDb ?? (await getDatabase());
   const now = Date.now();
@@ -484,6 +547,21 @@ export async function softDeleteTransaction(
 
   let changes = 0;
   await runExclusiveTransaction(db, async (txn) => {
+    const goalEntry = await txn.getFirstAsync<SavingsGoalEntryRow>(
+      `SELECT e.* FROM savings_goal_entries e
+       JOIN transactions linked ON linked.id=e.transaction_id
+       WHERE e.deleted_at IS NULL AND (linked.id=? OR linked.transfer_id=?) LIMIT 1;`,
+      id, existing.transfer_id
+    );
+    if (goalEntry?.link_mode === 'existing_transfer' && !options.confirmExistingGoalLink) {
+      throw new Error('GOAL_ERR_LINKED_TRANSFER_CONFIRMATION_REQUIRED');
+    }
+    if (goalEntry) {
+      await txn.runAsync(
+        'UPDATE savings_goal_entries SET deleted_at=?,cascade_deleted_at=?,updated_at=? WHERE id=?;',
+        now, now, now, goalEntry.id
+      );
+    }
     // Check if linked to a debt_transaction
     const dtx = await txn.getFirstAsync<{
       id: string;
@@ -576,6 +654,17 @@ export async function softDeleteTransaction(
       );
       changes = res.changes;
     }
+    if (goalEntry) {
+      const goal = await txn.getFirstAsync<SavingsGoalRow>('SELECT * FROM savings_goals WHERE id=?;', goalEntry.goal_id);
+      if (goal) {
+        const entries = await txn.getAllAsync<SavingsGoalEntryRow>('SELECT * FROM savings_goal_entries WHERE goal_id=? AND deleted_at IS NULL ORDER BY occurred_at,created_at,id;', goal.id);
+        const progress = deriveGoalProgress(entries, goal.target_amount);
+        await txn.runAsync(
+          `UPDATE savings_goals SET lifecycle_status=?,completed_at=?,updated_at=? WHERE id=?;`,
+          progress.lifecycleStatus, progress.lifecycleStatus === 'completed' ? now : null, now, goal.id
+        );
+      }
+    }
   });
 
   return changes > 0;
@@ -605,6 +694,17 @@ export async function restoreTransaction(
 
   let changes = 0;
   await runExclusiveTransaction(db, async (txn) => {
+    const cascadedGoalEntry = await txn.getFirstAsync<SavingsGoalEntryRow>(
+      `SELECT e.* FROM savings_goal_entries e
+       JOIN transactions linked ON linked.id=e.transaction_id
+       WHERE e.deleted_at IS NOT NULL AND e.cascade_deleted_at IS NOT NULL
+         AND (linked.id=? OR linked.transfer_id=?) LIMIT 1;`,
+      id, existing.transfer_id
+    );
+    const linkedGoal = cascadedGoalEntry
+      ? await txn.getFirstAsync<SavingsGoalRow>('SELECT * FROM savings_goals WHERE id=? AND deleted_at IS NULL;', cascadedGoalEntry.goal_id)
+      : null;
+    if (cascadedGoalEntry && (!linkedGoal || linkedGoal.archived_at !== null)) throw new Error('GOAL_ERR_UNAVAILABLE');
     // Check if linked to a debt_transaction
     const dtx = await txn.getFirstAsync<{
       id: string;
@@ -697,6 +797,26 @@ export async function restoreTransaction(
         id
       );
       changes = res.changes;
+    }
+    if (cascadedGoalEntry && linkedGoal) {
+      const currentEntries = await txn.getAllAsync<SavingsGoalEntryRow>(
+        'SELECT * FROM savings_goal_entries WHERE goal_id=? AND deleted_at IS NULL ORDER BY occurred_at,created_at,id;',
+        linkedGoal.id
+      );
+      const current = deriveGoalProgress(currentEntries, linkedGoal.target_amount).current;
+      if (cascadedGoalEntry.entry_type === 'withdrawal' && cascadedGoalEntry.amount > current) {
+        throw new Error('GOAL_ERR_OVER_WITHDRAWAL');
+      }
+      await txn.runAsync(
+        'UPDATE savings_goal_entries SET deleted_at=NULL,cascade_deleted_at=NULL,updated_at=? WHERE id=?;',
+        now, cascadedGoalEntry.id
+      );
+      const restoredEntries = [...currentEntries, { ...cascadedGoalEntry, deleted_at: null }];
+      const progress = deriveGoalProgress(restoredEntries, linkedGoal.target_amount);
+      await txn.runAsync(
+        'UPDATE savings_goals SET lifecycle_status=?,completed_at=?,updated_at=? WHERE id=?;',
+        progress.lifecycleStatus, progress.lifecycleStatus === 'completed' ? now : null, now, linkedGoal.id
+      );
     }
   });
 

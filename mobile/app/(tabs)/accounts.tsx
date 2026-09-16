@@ -25,6 +25,8 @@ import {
   getAccountsWithBalances,
   createAccount,
   deleteAccount,
+  archiveAccount,
+  restoreArchivedAccount,
   AccountWithBalance,
   AccountType,
 } from '@/src/db';
@@ -45,6 +47,7 @@ export default function AccountsScreen() {
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   // Modal & form state
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -158,6 +161,25 @@ export default function AccountsScreen() {
     );
   };
 
+  const handleArchiveAccount = async (account: AccountWithBalance, confirmed = false) => {
+    try {
+      await archiveAccount(account.id, confirmed);
+      await loadAccounts();
+    } catch (err) {
+      if (!confirmed && err instanceof Error && err.message.includes('FUNDED_GOAL_CONFIRMATION')) {
+        Alert.alert(t('planning.fundedGoalsTitle'), t('planning.fundedGoalsArchivePrompt'), [
+          { text: t('actions.cancel'), style: 'cancel' },
+          { text: t('planning.archive'), style: 'destructive', onPress: () => handleArchiveAccount(account, true) },
+        ]);
+      } else Alert.alert(t('status.error'), err instanceof Error ? err.message : t('planning.archiveAccountFailed'));
+    }
+  };
+
+  const visibleAccounts = useMemo(
+    () => accounts.filter((account) => showArchived ? account.archived_at !== null : account.archived_at === null),
+    [accounts, showArchived]
+  );
+
   // Group totals by currency - never calculate a mixed-currency grand total without exchange-rate conversion
   const currencyTotals = useMemo(() => {
     const groups: { [currency: string]: Money } = {};
@@ -267,11 +289,14 @@ export default function AccountsScreen() {
         </View>
 
         {/* Accounts List / Empty State */}
+        <TouchableOpacity onPress={() => setShowArchived((value) => !value)}>
+          <Text style={{ color: theme.primary }}>{t(showArchived ? 'planning.showActiveAccounts' : 'planning.showArchivedAccounts')}</Text>
+        </TouchableOpacity>
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={theme.primary} />
           </View>
-        ) : accounts.length === 0 ? (
+        ) : visibleAccounts.length === 0 ? (
           <View
             style={[
               styles.emptyCard,
@@ -302,7 +327,7 @@ export default function AccountsScreen() {
           </View>
         ) : (
           <View style={styles.listContainer}>
-            {accounts.map((account) => (
+            {visibleAccounts.map((account) => (
               <View
                 key={account.id}
                 style={[
@@ -357,15 +382,16 @@ export default function AccountsScreen() {
 
                   <TouchableOpacity
                     style={styles.deleteButton}
-                    onPress={() => handleDeleteAccount(account)}
+                    onPress={() => account.archived_at === null ? handleArchiveAccount(account) : restoreArchivedAccount(account.id).then(loadAccounts)}
                     accessibilityRole="button"
-                    accessibilityLabel={t('actions.delete')}>
+                    accessibilityLabel={t(account.archived_at === null ? 'planning.archive' : 'planning.restore')}>
                     <Ionicons
-                      name="trash-outline"
+                      name={account.archived_at === null ? 'archive-outline' : 'refresh-outline'}
                       size={18}
                       color={theme.textMuted}
                     />
                   </TouchableOpacity>
+                  {account.transaction_count === 0 && account.archived_at === null && <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteAccount(account)} accessibilityRole="button" accessibilityLabel={t('actions.delete')}><Ionicons name="trash-outline" size={18} color={theme.textMuted}/></TouchableOpacity>}
                 </View>
               </View>
             ))}

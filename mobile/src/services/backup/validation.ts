@@ -24,14 +24,18 @@ import {
   CounterpartyRow,
   DebtRow,
   DebtTransactionRow,
+  BudgetRow,
+  BudgetCategoryRow,
+  SavingsGoalRow,
+  SavingsGoalEntryRow,
 } from '../../db/types';
 import {
   BackupPayloadData,
   SchemaMigrationRow,
   RestoreError,
 } from './types';
-import { isValidCivilDate } from '../../db/migrations/004_debt_ledger_integrity_upgrade';
-import { CANONICAL_MIGRATION_CHECKSUMS } from '../../db/migrations/006_backup_integrity_hardening';
+import { isValidCivilDate } from '../../domain/civil-date';
+import { CANONICAL_MIGRATION_CHECKSUMS } from '../../db/migrations/registry';
 
 // ID validator: non-empty string, reasonable length (1 to 128 characters)
 function isValidId(id: unknown): id is string {
@@ -94,6 +98,9 @@ export function validateAccountRow(row: unknown, index: number): AccountRow {
   if (!isValidTimestamp(a.updated_at)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Account ${a.id} has invalid updated_at.`);
   }
+  if (a.archived_at !== null && a.archived_at !== undefined && !isValidTimestamp(a.archived_at)) {
+    throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Account ${a.id} has invalid archived_at.`);
+  }
 
   return {
     id: a.id,
@@ -103,6 +110,7 @@ export function validateAccountRow(row: unknown, index: number): AccountRow {
     currency: a.currency,
     created_at: a.created_at,
     updated_at: a.updated_at,
+    archived_at: typeof a.archived_at === 'number' ? a.archived_at : null,
   };
 }
 
@@ -225,6 +233,9 @@ export function validateTransactionRow(row: unknown, index: number): Transaction
   if (!isValidTimestamp(t.timestamp)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Transaction ${t.id} has invalid timestamp.`);
   }
+  if (!isValidCivilDate(t.occurred_on as string)) {
+    throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Transaction ${t.id} has invalid occurred_on.`);
+  }
   if (!isValidTimestamp(t.created_at)) {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Transaction ${t.id} has invalid created_at.`);
   }
@@ -246,6 +257,7 @@ export function validateTransactionRow(row: unknown, index: number): Transaction
     related_account_id: typeof t.related_account_id === 'string' ? t.related_account_id : null,
     note: typeof t.note === 'string' ? t.note : null,
     timestamp: t.timestamp,
+    occurred_on: t.occurred_on as string,
     created_at: t.created_at,
     updated_at: t.updated_at,
     deleted_at: typeof t.deleted_at === 'number' ? t.deleted_at : null,
@@ -338,7 +350,7 @@ export function validateDebtRow(row: unknown, index: number): DebtRow {
     throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Debt ${d.id} has invalid opened_at.`);
   }
   if (d.due_date !== null && d.due_date !== undefined) {
-    if (!isValidCivilDate(d.due_date)) {
+    if (typeof d.due_date !== 'string' || !isValidCivilDate(d.due_date)) {
       throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Debt ${d.id} has invalid due_date: "${String(d.due_date)}". Must be valid YYYY-MM-DD.`);
     }
   }
@@ -478,6 +490,56 @@ export function validateSchemaMigrationRow(row: unknown, index: number): SchemaM
 /**
  * Validates cross-table relations and invariants across the entire restored dataset.
  */
+export function validateBudgetRow(row: unknown, index: number): BudgetRow {
+  if (!row || typeof row !== 'object') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Invalid budget at ${index}.`);
+  const b = row as Record<string, unknown>;
+  if (!isValidId(b.id) || (b.name !== null && b.name !== undefined && typeof b.name !== 'string')) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${index} has invalid identity.`);
+  if (b.period_type !== 'monthly' && b.period_type !== 'custom') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid period type.`);
+  if (!isValidCivilDate(b.starts_on as string) || !isValidCivilDate(b.ends_on as string) || (b.ends_on as string) < (b.starts_on as string)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid period.`);
+  if (!isValidCurrency(b.currency)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid currency.`);
+  for (const [key,value] of [['income_target',b.income_target],['expense_limit',b.expense_limit]] as const) {
+    if (value !== null && value !== undefined && !isPositiveSafeInteger(value)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid ${key}.`);
+  }
+  if (b.rollover_policy !== 'none' && b.rollover_policy !== 'unspent_only') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid rollover policy.`);
+  if (!isValidTimestamp(b.created_at) || !isValidTimestamp(b.updated_at)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid timestamps.`);
+  for (const value of [b.archived_at,b.deleted_at]) if (value !== null && value !== undefined && !isValidTimestamp(value)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget ${b.id} has invalid lifecycle timestamp.`);
+  return b as unknown as BudgetRow;
+}
+
+export function validateBudgetCategoryRow(row: unknown, index: number): BudgetCategoryRow {
+  if (!row || typeof row !== 'object') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Invalid budget category at ${index}.`);
+  const b = row as Record<string, unknown>;
+  if (!isValidId(b.id) || !isValidId(b.budget_id) || !isValidId(b.category_id) || !isPositiveSafeInteger(b.amount) || !isNonNegativeSafeInteger(b.sort_order)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget category ${index} is invalid.`);
+  if (!isValidTimestamp(b.created_at) || !isValidTimestamp(b.updated_at) || (b.deleted_at != null && !isValidTimestamp(b.deleted_at))) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Budget category ${b.id} has invalid timestamps.`);
+  return b as unknown as BudgetCategoryRow;
+}
+
+export function validateSavingsGoalRow(row: unknown, index: number): SavingsGoalRow {
+  if (!row || typeof row !== 'object') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Invalid savings goal at ${index}.`);
+  const g = row as Record<string, unknown>;
+  if (!isValidId(g.id) || typeof g.name !== 'string' || !g.name || !isPositiveSafeInteger(g.target_amount) || !isValidCurrency(g.currency)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal ${index} is invalid.`);
+  if (g.target_date != null && !isValidCivilDate(g.target_date as string)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal ${g.id} has invalid target date.`);
+  if (g.lifecycle_status !== 'active' && g.lifecycle_status !== 'completed') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal ${g.id} has invalid lifecycle.`);
+  if ((g.lifecycle_status === 'active') !== (g.completed_at == null)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal ${g.id} lifecycle timestamp disagrees.`);
+  if (!isValidTimestamp(g.created_at) || !isValidTimestamp(g.updated_at)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal ${g.id} has invalid timestamps.`);
+  for (const value of [g.completed_at,g.archived_at,g.deleted_at]) if (value != null && !isValidTimestamp(value)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal ${g.id} has invalid lifecycle timestamp.`);
+  return g as unknown as SavingsGoalRow;
+}
+
+export function validateSavingsGoalEntryRow(row: unknown, index: number): SavingsGoalEntryRow {
+  if (!row || typeof row !== 'object') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Invalid savings goal entry at ${index}.`);
+  const e = row as Record<string, unknown>;
+  if (!isValidId(e.id) || !isValidId(e.goal_id) || !isPositiveSafeInteger(e.amount)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${index} is invalid.`);
+  if (e.entry_type !== 'contribution' && e.entry_type !== 'withdrawal') throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${e.id} has invalid type.`);
+  if (!['allocation_only','existing_transfer','owned_transfer'].includes(String(e.link_mode))) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${e.id} has invalid link mode.`);
+  const needsTransaction = e.link_mode !== 'allocation_only';
+  if (needsTransaction !== isValidId(e.transaction_id)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${e.id} has invalid evidence link.`);
+  if (!isValidTimestamp(e.occurred_at) || !isValidCivilDate(e.occurred_on as string) || !isValidTimestamp(e.created_at) || !isValidTimestamp(e.updated_at)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${e.id} has invalid date.`);
+  for (const value of [e.cascade_deleted_at,e.deleted_at]) if (value != null && !isValidTimestamp(value)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${e.id} has invalid lifecycle timestamp.`);
+  if (e.cascade_deleted_at != null && e.deleted_at == null) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Savings goal entry ${e.id} has invalid cascade state.`);
+  return e as unknown as SavingsGoalEntryRow;
+}
+
 export function validatePayloadInvariants(data: BackupPayloadData): void {
   // 1. Uniqueness of Primary Keys
   const accountsById = new Map<string, AccountRow>();
@@ -489,11 +551,13 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
   }
 
   const categoryIds = new Set<string>();
+  const categoriesById = new Map<string, CategoryRow>();
   for (const c of data.categories) {
     if (categoryIds.has(c.id)) {
       throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate category ID: ${c.id}`);
     }
     categoryIds.add(c.id);
+    categoriesById.set(c.id, c);
   }
 
   const counterpartyIds = new Set<string>();
@@ -567,6 +631,12 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
       throw new RestoreError(
         'RESTORE_ERR_INVARIANT_FAILED',
         `Transfer ${transferId} timestamps do not match: ${t1.timestamp} !== ${t2.timestamp}`
+      );
+    }
+    if (t1.occurred_on !== t2.occurred_on) {
+      throw new RestoreError(
+        'RESTORE_ERR_INVARIANT_FAILED',
+        `Transfer ${transferId} civil dates do not match: ${t1.occurred_on} !== ${t2.occurred_on}`
       );
     }
     if (t1.account_id !== t2.related_account_id || t2.account_id !== t1.related_account_id) {
@@ -678,6 +748,16 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
           );
         }
       }
+
+      const expectedCategory = debt.direction === 'lent'
+        ? (dt.role === 'disbursement' ? 'cat_exp_loan_given' : 'cat_inc_loan_repayment_received')
+        : (dt.role === 'disbursement' ? 'cat_inc_loan_received' : 'cat_exp_loan_repayment');
+      if (linkedTx.category_id !== expectedCategory) {
+        throw new RestoreError(
+          'RESTORE_ERR_INVARIANT_FAILED',
+          `Debt transaction ${dt.id} metadata disagrees with stable category ${String(linkedTx.category_id)}; expected ${expectedCategory}.`
+        );
+      }
     }
 
     const list = movementsByDebt.get(dt.debt_id) ?? [];
@@ -730,7 +810,102 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
     }
   }
 
-  // 4. Migration Ledger Uniqueness and Canonical Checksum Enforcement
+  // 4. Planning ledger integrity.
+  const budgetsById = new Map<string, BudgetRow>();
+  for (const budget of data.budgets) {
+    if (budgetsById.has(budget.id)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate budget ID: ${budget.id}`);
+    budgetsById.set(budget.id, budget);
+    if (budget.account_id && !accountsById.has(budget.account_id)) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Budget ${budget.id} references missing account ${budget.account_id}.`);
+    if (budget.account_id && accountsById.get(budget.account_id)?.currency !== budget.currency) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budget.id} currency disagrees with its account.`);
+  }
+  for (const budget of data.budgets) {
+    if (budget.rollover_from_budget_id) {
+      const previous = budgetsById.get(budget.rollover_from_budget_id);
+      if (!previous) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Budget ${budget.id} references missing rollover budget.`);
+      if (previous.currency !== budget.currency || previous.ends_on >= budget.starts_on) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budget.id} has an invalid rollover predecessor.`);
+      const visited = new Set<string>([budget.id]);
+      let cursor: BudgetRow | undefined = previous;
+      while (cursor) {
+        if (visited.has(cursor.id)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budget.id} has a rollover cycle.`);
+        visited.add(cursor.id);
+        cursor = cursor.rollover_from_budget_id ? budgetsById.get(cursor.rollover_from_budget_id) : undefined;
+      }
+    }
+  }
+  const activeBudgets = data.budgets.filter((b) => b.deleted_at === null && b.archived_at === null);
+  for (let i = 0; i < activeBudgets.length; i++) {
+    for (let j = i + 1; j < activeBudgets.length; j++) {
+      const a = activeBudgets[i]; const b = activeBudgets[j];
+      const sameScope = a.currency === b.currency && a.account_id === b.account_id;
+      if (sameScope && a.starts_on <= b.ends_on && b.starts_on <= a.ends_on) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Active budgets ${a.id} and ${b.id} overlap.`);
+    }
+  }
+  const allocationKeys = new Set<string>();
+  const allocationIds = new Set<string>();
+  const allocatedByBudget = new Map<string, bigint>();
+  for (const item of data.budget_categories) {
+    if (allocationIds.has(item.id)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate budget category ID: ${item.id}`);
+    allocationIds.add(item.id);
+    const budget = budgetsById.get(item.budget_id);
+    if (!budget) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Budget category ${item.id} references missing budget.`);
+    const category = categoriesById.get(item.category_id);
+    if (!category) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Budget category ${item.id} references missing category.`);
+    if (category.type !== 'expense') throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget category ${item.id} is not an expense category.`);
+    if (item.deleted_at === null) {
+      const key = `${item.budget_id}\u0000${item.category_id}`;
+      if (allocationKeys.has(key)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${item.budget_id} repeats category ${item.category_id}.`);
+      allocationKeys.add(key);
+      allocatedByBudget.set(item.budget_id, (allocatedByBudget.get(item.budget_id) ?? 0n) + BigInt(item.amount));
+    }
+  }
+  for (const [budgetId, allocated] of allocatedByBudget) {
+    const limit = budgetsById.get(budgetId)?.expense_limit;
+    if (limit === null || limit === undefined || allocated > BigInt(limit)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budgetId} category plan exceeds its expense limit.`);
+  }
+
+  const goalsById = new Map<string, SavingsGoalRow>();
+  for (const goal of data.savings_goals) {
+    if (goalsById.has(goal.id)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate savings goal ID: ${goal.id}`);
+    goalsById.set(goal.id, goal);
+    if (goal.linked_account_id) {
+      const account = accountsById.get(goal.linked_account_id);
+      if (!account) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Savings goal ${goal.id} references missing account.`);
+      if (account.currency !== goal.currency) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal ${goal.id} currency disagrees with its account.`);
+    }
+  }
+  const goalEntryIds = new Set<string>();
+  const permanentlyLinkedTransactions = new Set<string>();
+  const activeAmounts = new Map<string, bigint>();
+  for (const entry of data.savings_goal_entries) {
+    if (goalEntryIds.has(entry.id)) throw new RestoreError('RESTORE_ERR_SCHEMA_VALIDATION', `Duplicate savings goal entry ID: ${entry.id}`);
+    goalEntryIds.add(entry.id);
+    const goal = goalsById.get(entry.goal_id);
+    if (!goal) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Savings goal entry ${entry.id} references missing goal.`);
+    if (entry.transaction_id) {
+      if (permanentlyLinkedTransactions.has(entry.transaction_id)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Transaction ${entry.transaction_id} supports multiple historical savings entries.`);
+      permanentlyLinkedTransactions.add(entry.transaction_id);
+      const tx = transactionsById.get(entry.transaction_id);
+      if (!tx) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Savings goal entry ${entry.id} references missing transaction.`);
+      if (!goal.linked_account_id || (tx.account_id !== goal.linked_account_id && tx.related_account_id !== goal.linked_account_id)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence is outside the linked account.`);
+      if (tx.type !== 'transfer' || tx.amount !== entry.amount || tx.occurred_on !== entry.occurred_on) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence metadata disagrees.`);
+      const expectedRole = entry.entry_type === 'contribution' ? 'destination' : 'source';
+      if (tx.transfer_role !== expectedRole) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence direction disagrees.`);
+      if (entry.deleted_at === null && tx.deleted_at !== null) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Active savings entry ${entry.id} references deleted evidence.`);
+    }
+    if (entry.deleted_at === null) {
+      const signed = entry.entry_type === 'contribution' ? BigInt(entry.amount) : -BigInt(entry.amount);
+      const next = (activeAmounts.get(entry.goal_id) ?? 0n) + signed;
+      if (next < 0n) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal ${entry.goal_id} has a negative allocation.`);
+      activeAmounts.set(entry.goal_id, next);
+    }
+  }
+  for (const goal of data.savings_goals) {
+    if (goal.deleted_at !== null) continue;
+    const completed = (activeAmounts.get(goal.id) ?? 0n) >= BigInt(goal.target_amount);
+    if ((goal.lifecycle_status === 'completed') !== completed) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal ${goal.id} lifecycle disagrees with its allocation.`);
+  }
+
+  // 5. Migration Ledger Uniqueness and Canonical Checksum Enforcement
   const migrationVersions = new Set<number>();
   for (const m of data.schema_migrations) {
     if (migrationVersions.has(m.version)) {

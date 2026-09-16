@@ -10,6 +10,7 @@
  */
 
 import { getDatabase, runExclusiveTransaction } from './client';
+import { assertCivilDate, localCivilDateFromTimestamp } from '../domain/civil-date';
 import {
   CreateDebtInput,
   DatabaseConnection,
@@ -166,6 +167,8 @@ export async function createDebt(
 
   const currency = input.currency || 'BDT';
   const openedAt = input.openedAt ?? now;
+  const openedOn = input.openedOn ?? localCivilDateFromTimestamp(openedAt);
+  assertCivilDate(openedOn, 'openedOn');
   const dueDate = input.dueDate ?? null;
   const note = input.note ? input.note.trim() : null;
   const debtId = generateDebtId();
@@ -179,13 +182,14 @@ export async function createDebt(
         throw new Error('Account ID is required when opening a debt with cash movement.');
       }
 
-      const acc = await txn.getFirstAsync<{ id: string; currency: string }>(
-        'SELECT id, currency FROM accounts WHERE id = ?;',
+      const acc = await txn.getFirstAsync<{ id: string; currency: string; archived_at: number | null }>(
+        'SELECT id, currency, archived_at FROM accounts WHERE id = ?;',
         input.accountId
       );
       if (!acc) {
         throw new Error(`Account not found: ${input.accountId}`);
       }
+      if (acc.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
       if (acc.currency !== currency) {
         throw new Error(
           `Account currency (${acc.currency}) must match debt currency (${currency})`
@@ -204,8 +208,8 @@ export async function createDebt(
       await txn.runAsync(
         `INSERT INTO transactions (
            id, account_id, category_id, amount, type, transfer_id, transfer_role,
-           related_account_id, note, timestamp, created_at, updated_at, deleted_at
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL);`,
+           related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL);`,
         linkedTransactionId,
         input.accountId,
         categoryId,
@@ -213,6 +217,7 @@ export async function createDebt(
         txType,
         note,
         openedAt,
+        openedOn,
         now,
         now
       );
@@ -283,6 +288,8 @@ export async function recordRepayment(
   }
 
   const occurredAt = input.occurredAt ?? now;
+  const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(occurredAt);
+  assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note ? input.note.trim() : null;
   const dtxId = generateDebtTransactionId();
   let linkedTxId: string | null = null;
@@ -348,13 +355,14 @@ export async function recordRepayment(
       throw new Error('Account ID is required to record a debt repayment transaction.');
     }
 
-    const acc = await txn.getFirstAsync<{ id: string; currency: string }>(
-      'SELECT id, currency FROM accounts WHERE id = ?;',
+    const acc = await txn.getFirstAsync<{ id: string; currency: string; archived_at: number | null }>(
+      'SELECT id, currency, archived_at FROM accounts WHERE id = ?;',
       input.accountId
     );
     if (!acc) {
       throw new Error(`Account not found: ${input.accountId}`);
     }
+    if (acc.archived_at !== null) throw new Error('ACCOUNT_ERR_ARCHIVED');
     if (acc.currency !== debtRow.currency) {
       throw new Error(
         `Account currency (${acc.currency}) must match debt currency (${debtRow.currency})`
@@ -375,8 +383,8 @@ export async function recordRepayment(
     await txn.runAsync(
       `INSERT INTO transactions (
          id, account_id, category_id, amount, type, transfer_id, transfer_role,
-         related_account_id, note, timestamp, created_at, updated_at, deleted_at
-       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL);`,
+         related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at
+       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL);`,
       linkedTxId,
       input.accountId,
       categoryId,
@@ -384,6 +392,7 @@ export async function recordRepayment(
       txType,
       note,
       occurredAt,
+      occurredOn,
       now,
       now
     );

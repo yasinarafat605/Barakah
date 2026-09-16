@@ -11,6 +11,7 @@ import { migration004 } from './migrations/004_debt_ledger_integrity_upgrade';
 import { migration005 } from './migrations/005_backup_metadata_and_checksums';
 import { migration006 } from './migrations/006_backup_integrity_hardening';
 import { migration007 } from './migrations/007_backup_export_statuses';
+import { migration008 } from './migrations/008_planning_foundation';
 import { CANONICAL_MIGRATION_CHECKSUMS } from './migrations/registry';
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -25,6 +26,7 @@ export const MIGRATIONS: Migration[] = [
   migration005,
   migration006,
   migration007,
+  migration008,
 ];
 
 export interface MigrationResult {

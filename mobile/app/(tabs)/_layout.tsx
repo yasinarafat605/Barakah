@@ -43,10 +43,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="accounts"
         options={{
-          title: t('nav.accounts'),
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons size={24} name={focused ? 'wallet' : 'wallet-outline'} color={color} />
-          ),
+          href: null,
         }}
       />
       <Tabs.Screen
@@ -59,14 +56,18 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="zakat"
+        name="plan"
         options={{
-          title: t('nav.zakat'),
+          title: t('nav.plan'),
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons size={24} name={focused ? 'shield-checkmark' : 'shield-checkmark-outline'} color={color} />
+            <Ionicons size={24} name={focused ? 'pie-chart' : 'pie-chart-outline'} color={color} />
           ),
         }}
       />
+      <Tabs.Screen name="islamic" options={{ title: t('nav.islamic'), tabBarIcon: ({ color, focused }) => (
+        <Ionicons size={24} name={focused ? 'shield-checkmark' : 'shield-checkmark-outline'} color={color} />
+      ) }} />
+      <Tabs.Screen name="zakat" options={{ href: null }} />
       <Tabs.Screen
         name="settings"
         options={{

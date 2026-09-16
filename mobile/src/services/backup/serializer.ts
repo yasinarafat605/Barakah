@@ -55,6 +55,10 @@ export function computeTableChecksums(payload: BackupPayloadData): TableChecksum
   const counterpartiesSorted = [...payload.counterparties].sort((a, b) => compareStr(a.id, b.id));
   const debtsSorted = [...payload.debts].sort((a, b) => compareStr(a.id, b.id));
   const debtTransactionsSorted = [...payload.debt_transactions].sort((a, b) => compareStr(a.id, b.id));
+  const budgetsSorted = [...payload.budgets].sort((a, b) => compareStr(a.id, b.id));
+  const budgetCategoriesSorted = [...payload.budget_categories].sort((a, b) => compareStr(a.id, b.id));
+  const goalsSorted = [...payload.savings_goals].sort((a, b) => compareStr(a.id, b.id));
+  const goalEntriesSorted = [...payload.savings_goal_entries].sort((a, b) => compareStr(a.id, b.id));
   const schemaMigrationsSorted = [...payload.schema_migrations].sort((a, b) => a.version - b.version);
 
   return {
@@ -64,8 +68,26 @@ export function computeTableChecksums(payload: BackupPayloadData): TableChecksum
     counterparties: computeSha256Hex(canonicalJsonStringify(counterpartiesSorted)),
     debts: computeSha256Hex(canonicalJsonStringify(debtsSorted)),
     debt_transactions: computeSha256Hex(canonicalJsonStringify(debtTransactionsSorted)),
+    budgets: computeSha256Hex(canonicalJsonStringify(budgetsSorted)),
+    budget_categories: computeSha256Hex(canonicalJsonStringify(budgetCategoriesSorted)),
+    savings_goals: computeSha256Hex(canonicalJsonStringify(goalsSorted)),
+    savings_goal_entries: computeSha256Hex(canonicalJsonStringify(goalEntriesSorted)),
     schema_migrations: computeSha256Hex(canonicalJsonStringify(schemaMigrationsSorted)),
   };
+}
+
+export function computeLegacyTableChecksums(payload: Record<string, any[]>): Record<string, string> {
+  const names = ['accounts','categories','transactions','counterparties','debts','debt_transactions','schema_migrations'];
+  const result: Record<string, string> = {};
+  for (const name of names) {
+    const rows = [...payload[name]].sort((a, b) => {
+      const left = name === 'schema_migrations' ? a.version : a.id;
+      const right = name === 'schema_migrations' ? b.version : b.id;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+    result[name] = computeSha256Hex(canonicalJsonStringify(rows));
+  }
+  return result;
 }
 
 /**
@@ -145,7 +167,7 @@ export function validateManifestStructure(manifest: unknown): BackupManifest {
 
   const m = manifest as Record<string, unknown>;
 
-  if (typeof m.manifestVersion !== 'number' || m.manifestVersion !== 1) {
+  if (m.manifestVersion !== 1 && m.manifestVersion !== 2) {
     throw new RestoreError('RESTORE_ERR_UNSUPPORTED_VERSION', `Unsupported manifest version: ${String(m.manifestVersion)}`);
   }
   if (typeof m.createdAtMs !== 'number' || !Number.isSafeInteger(m.createdAtMs) || m.createdAtMs <= 0) {
@@ -153,6 +175,9 @@ export function validateManifestStructure(manifest: unknown): BackupManifest {
   }
   if (typeof m.schemaVersion !== 'number' || !Number.isSafeInteger(m.schemaVersion) || m.schemaVersion <= 0) {
     throw new RestoreError('RESTORE_ERR_INVALID_MANIFEST', 'Missing or invalid schemaVersion in manifest.');
+  }
+  if ((m.schemaVersion <= 7 && m.manifestVersion !== 1) || (m.schemaVersion === 8 && m.manifestVersion !== 2)) {
+    throw new RestoreError('RESTORE_ERR_UNSUPPORTED_VERSION', 'Manifest version does not match schema version.');
   }
   if (typeof m.appVersion !== 'number' || !Number.isSafeInteger(m.appVersion) || m.appVersion <= 0) {
     throw new RestoreError('RESTORE_ERR_INVALID_MANIFEST', 'Missing or invalid appVersion in manifest.');
@@ -178,6 +203,9 @@ export function validateManifestStructure(manifest: unknown): BackupManifest {
     'debt_transactions',
     'schema_migrations',
   ];
+  if (m.manifestVersion === 2) {
+    requiredTables.push('budgets','budget_categories','savings_goals','savings_goal_entries');
+  }
 
   let totalRecords = 0;
   for (const table of requiredTables) {

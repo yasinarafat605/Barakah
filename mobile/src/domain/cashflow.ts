@@ -1,9 +1,9 @@
 /**
- * Cash-Flow vs. Earned Income Classification Domain Module
+ * Cash-flow classification domain module.
  * Strict adherence to:
  * - Requirement 4: Loan Received is not earned income. Loan Given is not consumption spending.
  *   Principal Repayment is not ordinary consumption spending. Loan Repayment Received is not earned income.
- * - Accurate separation of total cash flow from economic income/expense.
+ * - Accurate separation of gross external cash flow from income and expense excluding debt principal.
  */
 
 export const DEBT_PRINCIPAL_CATEGORY_KEYS = new Set<string>([
@@ -38,14 +38,12 @@ export interface CashFlowTransaction {
 }
 
 export interface CashFlowSummary {
-  /** Gross cash inflow into accounts (includes debt receipts) */
-  totalCashInflow: number;
-  /** True economic earned income (salary, business, gifts, etc. - excludes debt principal) */
-  earnedIncome: number;
-  /** Gross cash outflow from accounts (includes debt disbursements & repayments) */
-  totalCashOutflow: number;
-  /** True ordinary living/consumption expenses (groceries, bills, etc. - excludes debt principal) */
-  ordinaryExpenses: number;
+  grossExternalCashInflow: number;
+  incomeExcludingDebtPrincipal: number;
+  grossExternalCashOutflow: number;
+  expenseExcludingDebtPrincipal: number;
+  transferInflow: number;
+  transferOutflow: number;
   /** Total debt principal received (borrowed or lent repayments received) */
   debtPrincipalInflow: number;
   /** Total debt principal paid out (lent or borrowed repayments made) */
@@ -53,50 +51,62 @@ export interface CashFlowSummary {
 }
 
 /**
- * Aggregates transactions into gross cash flow versus true economic income & spending.
+ * Aggregates transactions into gross external cash flow, debt principal, transfers,
+ * and income/expense excluding debt principal.
  */
 export function classifyCashFlow(transactions: CashFlowTransaction[]): CashFlowSummary {
-  let totalCashInflow = 0;
-  let earnedIncome = 0;
-  let totalCashOutflow = 0;
-  let ordinaryExpenses = 0;
-  let debtPrincipalInflow = 0;
-  let debtPrincipalOutflow = 0;
+  let grossExternalCashInflow = 0n;
+  let incomeExcludingDebtPrincipal = 0n;
+  let grossExternalCashOutflow = 0n;
+  let expenseExcludingDebtPrincipal = 0n;
+  let transferInflow = 0n;
+  let transferOutflow = 0n;
+  let debtPrincipalInflow = 0n;
+  let debtPrincipalOutflow = 0n;
 
   for (const tx of transactions) {
+    if (!Number.isSafeInteger(tx.amount) || tx.amount <= 0) throw new Error('CASH_FLOW_ERR_UNSAFE_AMOUNT');
+    const amount = BigInt(tx.amount);
     const isDebt =
       isDebtPrincipalCategory(tx.category_id) || isDebtPrincipalCategory(tx.category_name_key);
 
     if (tx.type === 'income') {
-      totalCashInflow += tx.amount;
+      grossExternalCashInflow += amount;
       if (isDebt) {
-        debtPrincipalInflow += tx.amount;
+        debtPrincipalInflow += amount;
       } else {
-        earnedIncome += tx.amount;
+        incomeExcludingDebtPrincipal += amount;
       }
     } else if (tx.type === 'expense') {
-      totalCashOutflow += tx.amount;
+      grossExternalCashOutflow += amount;
       if (isDebt) {
-        debtPrincipalOutflow += tx.amount;
+        debtPrincipalOutflow += amount;
       } else {
-        ordinaryExpenses += tx.amount;
+        expenseExcludingDebtPrincipal += amount;
       }
     } else if (tx.type === 'transfer') {
       // Transfers shift money between accounts without altering net worth or income/expense
       if (tx.transfer_role === 'destination') {
-        totalCashInflow += tx.amount;
+        transferInflow += amount;
       } else if (tx.transfer_role === 'source') {
-        totalCashOutflow += tx.amount;
+        transferOutflow += amount;
       }
     }
   }
 
   return {
-    totalCashInflow,
-    earnedIncome,
-    totalCashOutflow,
-    ordinaryExpenses,
-    debtPrincipalInflow,
-    debtPrincipalOutflow,
+    grossExternalCashInflow: safe(grossExternalCashInflow),
+    incomeExcludingDebtPrincipal: safe(incomeExcludingDebtPrincipal),
+    grossExternalCashOutflow: safe(grossExternalCashOutflow),
+    expenseExcludingDebtPrincipal: safe(expenseExcludingDebtPrincipal),
+    transferInflow: safe(transferInflow),
+    transferOutflow: safe(transferOutflow),
+    debtPrincipalInflow: safe(debtPrincipalInflow),
+    debtPrincipalOutflow: safe(debtPrincipalOutflow),
   };
+}
+
+function safe(value: bigint): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('CASH_FLOW_ERR_AGGREGATE_OVERFLOW');
+  return Number(value);
 }

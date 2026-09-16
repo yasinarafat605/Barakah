@@ -16,7 +16,7 @@ import {
   serializeHeader,
   deriveKeyFromPassphrase,
 } from '../crypto';
-import { canonicalJsonStringify, compressJsonPayload } from '../serializer';
+import { canonicalJsonStringify, compressJsonPayload, computeLegacyTableChecksums } from '../serializer';
 
 describe('Backup and Restore Integration Suite', () => {
   const testPassphrase = 'ValidSecretPassphrase123!';
@@ -80,7 +80,7 @@ describe('Backup and Restore Integration Suite', () => {
     // Debt repayment cash transaction with matching amount and role
     await db.runAsync(
       `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_repay_1', 'acc_bdt_bank', 'cat_salary', 200000, 'income', NULL, NULL, NULL, 'আংশিক পরিশোধ', ?, ?, ?, NULL);`,
+       VALUES ('tx_repay_1', 'acc_bdt_bank', 'cat_inc_loan_repayment_received', 200000, 'income', NULL, NULL, NULL, 'আংশিক পরিশোধ', ?, ?, ?, NULL);`,
       now,
       now,
       now
@@ -120,7 +120,7 @@ describe('Backup and Restore Integration Suite', () => {
     );
 
     expect(backupResult.fileSizeBytes).toBeGreaterThan(100);
-    expect(backupResult.recordCount).toBe(32); // 2 acc + 23 cat + 4 tx (1 inc + 2 trf + 1 repay) + 1 cp + 1 debt + 1 dt = 32 records
+    expect(backupResult.recordCount).toBe(32); // 2 accounts + 23 categories + 4 transactions + counterparty + debt + debt movement.
     expect(backupResult.sha256Checksum).toHaveLength(64);
 
     // 3. Test inspectBackupHeader
@@ -275,6 +275,34 @@ describe('Backup and Restore Integration Suite', () => {
     await expect(verifyAndPreviewBackup(db, envelope, testPassphrase)).rejects.toThrow(RestoreError);
     await expect(verifyAndPreviewBackup(db, envelope, testPassphrase)).rejects.toThrow(/invalid due_date/i);
 
+    await db.closeAsync();
+  });
+
+  it('round-trips non-empty Phase 5 tables in manifest v2',async()=>{
+    const db=createBetterSqliteConnection();await runMigrations(db);const now=Date.now();
+    await db.runAsync("INSERT INTO accounts(id,name,type,initial_balance,currency,created_at,updated_at) VALUES('a','Cash','cash',1000,'BDT',?,?);",now,now);
+    await db.runAsync("INSERT INTO budgets(id,name,period_type,starts_on,ends_on,currency,account_id,expense_limit,rollover_policy,created_at,updated_at) VALUES('b','Month','monthly','2026-01-01','2026-01-31','BDT','a',500,'none',?,?);",now,now);
+    await db.runAsync("INSERT INTO budget_categories(id,budget_id,category_id,amount,sort_order,created_at,updated_at) VALUES('bc','b','cat_exp_food_groceries',200,0,?,?);",now,now);
+    await db.runAsync("INSERT INTO savings_goals(id,name,target_amount,currency,linked_account_id,lifecycle_status,created_at,updated_at) VALUES('g','Reserve',500,'BDT','a','active',?,?);",now,now);
+    await db.runAsync("INSERT INTO savings_goal_entries(id,goal_id,entry_type,amount,link_mode,occurred_at,occurred_on,created_at,updated_at) VALUES('ge','g','contribution',100,'allocation_only',?,'2026-01-01',?,?);",now,now,now);
+    const backup=await createEncryptedBackup(db,testPassphrase,testPassphrase,fastKdfParams);
+    const verified=await verifyAndPreviewBackup(db,backup.envelopeBytes,testPassphrase);
+    expect(verified.manifest.manifestVersion).toBe(2);
+    expect(verified.preview.rowCounts).toMatchObject({budgets:1,budget_categories:1,savings_goals:1,savings_goal_entries:1});
+    const staging=createBetterSqliteConnection();await populateAndVerifyStagingDatabase(staging,verified.manifest);
+    expect((await staging.getFirstAsync<{c:number}>('SELECT count(*) c FROM savings_goal_entries;'))?.c).toBe(1);
+    await staging.closeAsync();await db.closeAsync();
+  });
+
+  it.each([4,5,6,7])('authenticates schema-%i manifest v1 before deterministically upgrading its portable shape',async(schemaVersion)=>{
+    const db=createBetterSqliteConnection();await runMigrations(db);const now=Date.now();
+    const payload={accounts:[],categories:[],transactions:[],counterparties:[],debts:[],debt_transactions:[],schema_migrations:[]};
+    const manifest={manifestVersion:1,createdAtMs:now,appVersion:1,schemaVersion,rowCounts:{accounts:0,categories:0,transactions:0,counterparties:0,debts:0,debt_transactions:0,schema_migrations:0},tableChecksums:computeLegacyTableChecksums(payload),payload};
+    const salt=new Uint8Array(16),nonce=new Uint8Array(12);const key=await deriveKeyFromPassphrase(testPassphrase,salt,fastKdfParams);
+    const rawHeader=serializeHeader({formatVersion:1,kdfId:1,kdfN:fastKdfParams.N,kdfR:fastKdfParams.r,kdfP:fastKdfParams.p,salt,cipherId:1,nonce,schemaVersion,appVersion:1,flags:1,createdAtMs:now});
+    const envelope=encryptPayloadWithHeader(compressJsonPayload(canonicalJsonStringify(manifest)),key,parseHeader(rawHeader));
+    const verified=await verifyAndPreviewBackup(db,envelope,testPassphrase);
+    expect(verified.manifest.payload).toMatchObject({budgets:[],budget_categories:[],savings_goals:[],savings_goal_entries:[]});
     await db.closeAsync();
   });
 

@@ -246,7 +246,7 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
   it('rolls back and restores original database when post-activation checks fail', async () => {
     const emptyChecksums = computeTableChecksums({
       accounts: [], categories: [], transactions: [], counterparties: [], debts: [],
-      debt_transactions: [], schema_migrations: [],
+      debt_transactions: [], budgets: [], budget_categories: [], savings_goals: [], savings_goal_entries: [], schema_migrations: [],
     });
     const mockDb = {
       execAsync: jest.fn().mockResolvedValue(undefined),
@@ -296,16 +296,16 @@ describe('Backup Lifecycle, Concurrency & Atomic Rollback Suite', () => {
         createdAtMs: Date.now(),
         appVersion: 1,
         schemaVersion: 7,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, schema_migrations: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0, schema_migrations: 0 },
         tableChecksums: emptyChecksums,
-        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], schema_migrations: [] },
+        payload: { accounts: [], categories: [], transactions: [], counterparties: [], debts: [], debt_transactions: [], budgets: [], budget_categories: [], savings_goals: [], savings_goal_entries: [], schema_migrations: [] },
       },
       preview: {
         createdAtMs: Date.now(),
         schemaVersion: 7,
         appVersion: 1,
-        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
-        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0 },
+        rowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
+        liveRowCounts: { accounts: 0, categories: 0, transactions: 0, counterparties: 0, debts: 0, debt_transactions: 0, budgets: 0, budget_categories: 0, savings_goals: 0, savings_goal_entries: 0 },
       },
       envelopeBytes: new Uint8Array(100),
     };

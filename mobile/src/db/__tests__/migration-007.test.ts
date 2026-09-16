@@ -54,10 +54,10 @@ describe('Migration 007: Truthful Backup Export Statuses & Upgrade Integrity', (
     const preUpgradeCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM backup_history;');
     expect(preUpgradeCount?.c).toBe(legacyStatuses.length);
 
-    // 3. Run current migration runner: must not report v6 checksum mismatch and applies 007 exactly once
+    // 3. Run current migration runner: must not report v6 checksum mismatch and applies later migrations exactly once
     const upgradeResult = await runMigrations(db);
-    expect(upgradeResult.applied).toBe(1);
-    expect(upgradeResult.versions).toEqual([7]);
+    expect(upgradeResult.applied).toBe(2);
+    expect(upgradeResult.versions).toEqual([7, 8]);
 
     // 4. Verify all existing backup-history rows survived intact
     const postUpgradeCount = await db.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM backup_history;');
@@ -96,7 +96,7 @@ describe('Migration 007: Truthful Backup Export Statuses & Upgrade Integrity', (
     expect(rerunResult.versions).toEqual([]);
 
     const allApplied = await getAppliedMigrations(db);
-    expect(allApplied).toHaveLength(7);
+    expect(allApplied).toHaveLength(8);
     for (const m of allApplied) {
       expect(m.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[m.version]);
     }
