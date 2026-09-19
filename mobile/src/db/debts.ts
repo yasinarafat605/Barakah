@@ -12,6 +12,7 @@
 import { getDatabase, runExclusiveTransaction } from './client';
 import { assertCivilDate, localCivilDateFromTimestamp } from '../domain/civil-date';
 import { isSupportedCurrency } from '../domain/money';
+import { coerceSafeFinancialInteger, toSafeFinancialNumber } from '../domain/integer-math';
 import {
   CreateDebtInput,
   DatabaseConnection,
@@ -883,10 +884,10 @@ export async function getDebts(
   const rows = await db.getAllAsync<any>(query, ...params);
 
   return rows.map((r) => {
-    const original = Number(r.original_principal);
-    const repaid = Number(r.total_repaid);
+    const original = coerceSafeFinancialInteger(r.original_principal, 'debt original principal');
+    const repaid = coerceSafeFinancialInteger(r.total_repaid, 'debt total repaid');
     // Never conceal negative balances with Math.max(0, ...)
-    const outstanding = original - repaid;
+    const outstanding = toSafeFinancialNumber(BigInt(original) - BigInt(repaid), 'debt outstanding principal');
     if (outstanding < 0 && __DEV__) {
       console.warn(`[Barakah Integrity Warning] Debt ${r.id} has negative outstanding balance: ${outstanding}`);
     }
@@ -1164,7 +1165,7 @@ export async function getDebtTimeline(
     id: r.id,
     debt_id: r.debt_id,
     transaction_id: r.transaction_id,
-    amount: Number(r.amount),
+    amount: coerceSafeFinancialInteger(r.amount, 'debt timeline amount'),
     role: r.role,
     note: r.note,
     occurred_at: Number(r.occurred_at),

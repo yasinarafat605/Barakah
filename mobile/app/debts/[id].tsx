@@ -16,7 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Money } from '@/src/domain/money';
+import { formatBasisPoints, Money } from '@/src/domain/money';
+import { progressBasisPoints } from '@/src/domain/integer-math';
 import {
   getDebtById,
   getDebtTimeline,
@@ -167,10 +168,11 @@ export default function DebtDetailScreen() {
   const originalMoney = new Money(debt.original_principal);
   const repaidMoney = new Money(debt.total_repaid);
 
-  // Repayment progress calculation (0 to 100%)
-  const percentRepaid = debt.original_principal > 0
-    ? Math.min(100, Math.round((debt.total_repaid / debt.original_principal) * 100))
+  const rawProgressBasisPoints = debt.original_principal > 0
+    ? progressBasisPoints(debt.total_repaid, debt.original_principal)
     : 0;
+  const progressBasisPointsCapped = rawProgressBasisPoints > 10_000 ? 10_000 : rawProgressBasisPoints;
+  const progressWidthPercent = formatBasisPoints(progressBasisPointsCapped, 'en') as `${number}%`;
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
@@ -288,14 +290,14 @@ export default function DebtDetailScreen() {
                   styles.progressBarFill,
                   {
                     backgroundColor: theme.primary,
-                    width: `${percentRepaid}%`,
+                    width: progressWidthPercent,
                   },
                 ]}
               />
             </View>
             <View style={styles.progressLabels}>
               <Text style={[styles.progressText, { color: theme.textMuted }]}>
-                {t('debts.totalRepaid')}: {repaidMoney.format(currentLocale)} ({percentRepaid}%)
+                {t('debts.totalRepaid')}: {repaidMoney.format(currentLocale)} ({formatBasisPoints(progressBasisPointsCapped, currentLocale)})
               </Text>
               <Text style={[styles.progressText, { color: theme.textMuted }]}>
                 {originalMoney.format(currentLocale)}

@@ -17,7 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Money, parseMoneyInput } from '@/src/domain/money';
+import { Money, minorUnitsToMajorUnitString, parseMoneyInput } from '@/src/domain/money';
 import {
   getDebtById,
   getAccountsWithBalances,
@@ -84,9 +84,9 @@ export default function AddRepaymentModal() {
   const parsedAmount = useMemo<number | null>(() => {
     const trimmed = amountStr.trim();
     if (!trimmed) return null;
-    const res = parseMoneyInput(trimmed, 2);
+    const res = parseMoneyInput(trimmed, debt?.currency ?? 'BDT');
     return res.valid ? res.amountMinor : null;
-  }, [amountStr]);
+  }, [amountStr, debt?.currency]);
 
   // Timestamp parsing
   const parsedTimestamp = useMemo<number | null>(() => {
@@ -104,8 +104,7 @@ export default function AddRepaymentModal() {
   // Shortcut to pay full outstanding amount
   const handlePayFullAmount = () => {
     if (!debt) return;
-    const decimal = (debt.outstanding_principal / 100).toFixed(2);
-    setAmountStr(decimal);
+    setAmountStr(minorUnitsToMajorUnitString(debt.outstanding_principal, debt.currency));
   };
 
   const handleSave = async () => {

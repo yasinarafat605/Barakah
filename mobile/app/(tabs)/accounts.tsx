@@ -20,7 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Money } from '@/src/domain/money';
+import { Money, parseMoneyInput } from '@/src/domain/money';
 import {
   getAccountsWithBalances,
   createAccount,
@@ -100,17 +100,11 @@ export default function AccountsScreen() {
     let initialBalancePoisha = 0;
 
     if (rawBalanceStr !== '') {
-      // Convert Bengali numerals to Latin if entered in Bengali
-      const normalizedStr = rawBalanceStr.replace(/[০-৯]/g, (d) =>
-        String('০১২৩৪৫৬৭৮৯'.indexOf(d))
-      );
-      const parsedTaka = parseFloat(normalizedStr);
-
-      if (Number.isNaN(parsedTaka) || !Number.isFinite(parsedTaka) || parsedTaka < 0) {
+      const parsedBalance = parseMoneyInput(rawBalanceStr, 'BDT', { allowZero: true });
+      if (!parsedBalance.valid) {
         errors.balance = t('accounts.errors.invalidAmount');
       } else {
-        // ADR-004: All monetary inputs are integer minor units (poisha)
-        initialBalancePoisha = Math.round(parsedTaka * 100);
+        initialBalancePoisha = parsedBalance.amountMinor;
       }
     }
 

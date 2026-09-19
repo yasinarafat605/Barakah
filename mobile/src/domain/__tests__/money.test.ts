@@ -1,4 +1,11 @@
-import { formatMinorUnits, Money, toBengaliNumerals } from '../money';
+import {
+  formatMinorUnits,
+  formatBasisPoints,
+  minorUnitsToMajorUnitString,
+  Money,
+  SUPPORTED_CURRENCIES,
+  toBengaliNumerals,
+} from '../money';
 
 describe('Money Domain Value Object (ADR-004)', () => {
   describe('Float rejection upon instantiation', () => {
@@ -68,7 +75,7 @@ describe('Money Domain Value Object (ADR-004)', () => {
         total = total.add(new Money(10));
       }
       expect(total.amount).toBe(100);
-      expect(total.toMajorUnits()).toBe(1);
+      expect(total.toMajorUnitString()).toBe('1.00');
     });
 
     it('subtracts cleanly, including transitions to negative balances', () => {
@@ -90,13 +97,18 @@ describe('Money Domain Value Object (ADR-004)', () => {
       expect(() => bdt.compare(usd)).toThrow('Cannot compare Money with different currencies');
     });
 
-    it('multiplies by scalar with deterministic rounding to integer minor units', () => {
-      const m = new Money(100); // 1.00 BDT
-      const half = m.multiply(0.5);
-      expect(half.amount).toBe(50);
+    it('calculates integer percentages and basis points without floating point', () => {
+      expect(new Money(10_000).multiplyBasisPoints(2_500).amount).toBe(2_500);
+      expect(new Money(100).multiplyRatio(1, 3).amount).toBe(33);
+      expect(formatBasisPoints(3_333, 'en')).toBe('33.33%');
+    });
 
-      const third = new Money(100).multiply(1 / 3);
-      expect(third.amount).toBe(33); // 33.3333 rounded to 33
+    it('uses deterministic half-away-from-zero rounding unless toward-zero is requested', () => {
+      expect(new Money(1).multiplyRatio(1, 2).amount).toBe(1);
+      expect(new Money(-1).multiplyRatio(1, 2).amount).toBe(-1);
+      expect(new Money(1).multiplyRatio(1, 2, 'toward_zero').amount).toBe(0);
+      expect(new Money(-1).multiplyRatio(1, 2, 'toward_zero').amount).toBe(0);
+      expect(new Money(1).multiplyRatio(1, 3).amount).toBe(0);
     });
 
     it('allocates ratios without losing a single poisha to rounding', () => {
@@ -131,6 +143,31 @@ describe('Money Domain Value Object (ADR-004)', () => {
       expect(formatMinorUnits(9007199254740991, 'USD', 'en')).toBe('$90,071,992,547,409.91');
       expect(formatMinorUnits(12345, 'BDT', 'bn')).toBe(`৳${toBengaliNumerals('123.45')}`);
       expect(() => formatMinorUnits(Number.MAX_SAFE_INTEGER + 1, 'GBP')).toThrow('MONEY_ERR_UNSAFE_AMOUNT');
+    });
+
+    it('formats bigint minor units without converting through floating point', () => {
+      expect(formatMinorUnits(9_007_199_254_740_991n, 'BDT', 'en')).toBe('\u09F390,071,992,547,409.91');
+      expect(minorUnitsToMajorUnitString(-12_345n, 'BDT')).toBe('-123.45');
+    });
+
+    it('supports every declared currency and rejects unsupported currencies', () => {
+      for (const currency of SUPPORTED_CURRENCIES) {
+        expect(Money.fromMajorUnitString('1.23', currency)).toEqual(new Money(123, currency));
+        expect(typeof new Money(123, currency).toMajorUnitString()).toBe('string');
+      }
+      expect(() => new Money(100, 'XYZ')).toThrow('MONEY_ERR_UNSUPPORTED_CURRENCY');
+      expect(() => Money.fromMajorUnitString('1.00', 'XYZ')).toThrow('MONEY_ERR_UNSUPPORTED_CURRENCY');
+    });
+
+    it('returns no floating-point value from public monetary conversion and arithmetic APIs', () => {
+      const value = Money.fromMajorUnitString('12.34');
+      expect(typeof value.toMajorUnitString()).toBe('string');
+      expect(Number.isSafeInteger(value.amount)).toBe(true);
+      expect(Number.isSafeInteger(value.multiplyRatio(2, 3).amount)).toBe(true);
+      expect(Number.isSafeInteger(value.multiplyBasisPoints(333).amount)).toBe(true);
+      expect('fromMajorUnits' in Money).toBe(false);
+      expect('multiply' in value).toBe(false);
+      expect('toMajorUnits' in value).toBe(false);
     });
     it('formats 10050 poisha into ৳100.50 (English) and ৳১০০.৫০ (Bangla)', () => {
       const m = new Money(10050);

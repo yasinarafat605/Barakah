@@ -91,7 +91,7 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
 
       // Verify domain Money integration
       const money = new Money(account!.initial_balance, account!.currency);
-      expect(money.toMajorUnits()).toBe(1500);
+      expect(money.toMajorUnitString()).toBe('1500.00');
       expect(money.format('en')).toBe('৳1,500.00');
       expect(money.format('bn')).toBe('৳১,৫০০.০০');
     });

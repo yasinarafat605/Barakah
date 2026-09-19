@@ -106,7 +106,8 @@ Rules:
 
 1. Money is stored and computed as an **integer number of minor units** — paisa for BDT,
    cents for USD. `BDT 1,250.75` is stored as the integer `125075`.
-2. Minor-unit scale comes from a currency table (BDT=2, KWD=3, JPY=0). Never hardcode 100.
+2. Minor-unit scale comes from the supported-currency table. Unsupported currencies are
+   rejected; never hardcode 100.
 3. There is one `Money` type: `{ amountMinor: number; currency: string }`. Arithmetic goes
    through `src/domain/money.ts`. Adding two `Money` values of different currencies throws.
 4. Conversion to a display string happens only at the very edge, in a formatter that also
@@ -115,8 +116,12 @@ Rules:
    schema for money.** A CI check greps the schema for `REAL` and fails the build.
 6. Percentages, rates, and metal weights use their own integer scales: Zakat rate is stored
    in basis points (2.5% = `250`), gold weight in **milligrams** (`INTEGER`).
-7. Rounding happens once, at the end of a calculation chain, using half-up (round half away
-   from zero), and the rounding step is recorded in Zakat breakdowns.
+7. Multiplication and division accept integer numerator/denominator values or basis points,
+   never floating scalars. The default division rule is **half away from zero**; callers may
+   explicitly request truncation toward zero. Allocation truncates shares toward zero and
+   distributes residual minor units in input order so the original total is conserved.
+8. Human-entered major units start as strings and are parsed directly to integer minor units.
+   Formatters return strings; the money domain never returns a floating-point major-unit value.
 
 `Number.MAX_SAFE_INTEGER` is 9,007,199,254,740,991 — about 90 trillion BDT in paisa. That is
 sufficient, and a guard rejects any single amount above a configurable sane maximum.

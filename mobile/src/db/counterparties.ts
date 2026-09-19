@@ -10,6 +10,7 @@
  */
 
 import { getDatabase } from './client';
+import { coerceSafeFinancialInteger, sumFinancialValues } from '../domain/integer-math';
 import {
   CounterpartyRow,
   CounterpartyWithDebtSummary,
@@ -284,13 +285,13 @@ export async function getCounterparties(
     }
     const entry = balanceMap.get(row.counterparty_id)!;
     const curr = row.currency || 'BDT';
-    const amount = Number(row.outstanding_amount);
+    const amount = coerceSafeFinancialInteger(row.outstanding_amount, 'counterparty outstanding amount');
     if (amount <= 0) continue;
 
     if (row.direction === 'borrowed') {
-      entry.borrowed[curr] = (entry.borrowed[curr] || 0) + amount;
+      entry.borrowed[curr] = sumFinancialValues([entry.borrowed[curr] || 0, amount], 'counterparty borrowed total');
     } else {
-      entry.lent[curr] = (entry.lent[curr] || 0) + amount;
+      entry.lent[curr] = sumFinancialValues([entry.lent[curr] || 0, amount], 'counterparty lent total');
     }
   }
 

@@ -259,7 +259,7 @@ export default function CounterpartyProfileScreen() {
             ) : (
               Object.entries(counterparty.total_borrowed_by_currency).map(([curr, amt]) => (
                 <Text key={curr} style={[styles.summaryCardAmount, { color: theme.text }]}>
-                  {new Money(Number(amt)).format(currentLocale)}
+                  {new Money(amt, curr).format(currentLocale)}
                 </Text>
               ))
             )}
@@ -279,7 +279,7 @@ export default function CounterpartyProfileScreen() {
             ) : (
               Object.entries(counterparty.total_lent_by_currency).map(([curr, amt]) => (
                 <Text key={curr} style={[styles.summaryCardAmount, { color: theme.primary }]}>
-                  {new Money(Number(amt)).format(currentLocale)}
+                  {new Money(amt, curr).format(currentLocale)}
                 </Text>
               ))
             )}

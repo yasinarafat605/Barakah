@@ -40,8 +40,8 @@ export function getCurrencyFractionDigits(currency: string): number {
 /**
  * Converts any Latin digits (0-9) in a string to Bengali numerals (০-৯).
  */
-export function toBengaliNumerals(strOrNum: string | number): string {
-  return String(strOrNum).replace(/[0-9]/g, (digit) => BENGALI_DIGITS[parseInt(digit, 10)]);
+export function toBengaliNumerals(value: string): string {
+  return value.replace(/[0-9]/g, (digit) => BENGALI_DIGITS[parseInt(digit, 10)]);
 }
 
 /**
@@ -69,6 +69,10 @@ export interface MoneyParseResult {
   error?: MoneyParseError;
 }
 
+export interface MoneyParseOptions {
+  allowZero?: boolean;
+}
+
 /**
  * Parses monetary input string into integer minor units without floating-point arithmetic.
  * Conforms strictly to:
@@ -83,10 +87,12 @@ export interface MoneyParseResult {
  * - Zero and negative amounts rejected.
  * - Values exceeding JS safe integer range (Number.MAX_SAFE_INTEGER) rejected.
  */
-export function parseMoneyInput(rawInput: string, currencyOrDecimalPlaces: string | number = 'BDT'): MoneyParseResult {
-  const decimalPlaces = typeof currencyOrDecimalPlaces === 'number'
-    ? currencyOrDecimalPlaces
-    : getCurrencyFractionDigits(currencyOrDecimalPlaces);
+export function parseMoneyInput(
+  rawInput: string,
+  currency: string = 'BDT',
+  options: MoneyParseOptions = {}
+): MoneyParseResult {
+  const decimalPlaces = getCurrencyFractionDigits(currency);
   const trimmed = rawInput.trim();
   if (!trimmed) {
     return { valid: false, amountMinor: 0, error: 'empty' };
@@ -145,7 +151,7 @@ export function parseMoneyInput(rawInput: string, currencyOrDecimalPlaces: strin
   const multiplier = 10n ** BigInt(decimalPlaces);
   const totalMinorBig = intBig * multiplier + fracBig;
 
-  if (totalMinorBig <= 0n) {
+  if (totalMinorBig < 0n || (totalMinorBig === 0n && !options.allowZero)) {
     return { valid: false, amountMinor: 0, error: 'zero_or_negative' };
   }
 
@@ -163,9 +169,8 @@ function groupIntegerDigits(value: string): string {
   return value.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-export function formatMinorUnits(amountMinor: number | bigint, currency: string, locale: 'bn' | 'en' = 'en'): string {
-  const normalizedCurrency = currency.trim().toUpperCase();
-  const fractionDigits = getCurrencyFractionDigits(normalizedCurrency);
+function numericMinorUnitString(amountMinor: number | bigint, currency: string): string {
+  const fractionDigits = getCurrencyFractionDigits(currency);
   if (typeof amountMinor === 'number' && !Number.isSafeInteger(amountMinor)) throw new RangeError('MONEY_ERR_UNSAFE_AMOUNT');
   const value = typeof amountMinor === 'bigint' ? amountMinor : BigInt(amountMinor);
   const negative = value < 0n;
@@ -176,9 +181,26 @@ export function formatMinorUnits(amountMinor: number | bigint, currency: string,
   const numeric = fractionDigits === 0
     ? groupIntegerDigits(major.toString())
     : `${groupIntegerDigits(major.toString())}.${fraction.toString().padStart(fractionDigits, '0')}`;
+  return `${negative ? '-' : ''}${numeric}`;
+}
+
+export function minorUnitsToMajorUnitString(
+  amountMinor: number | bigint,
+  currency: string,
+  locale: 'bn' | 'en' = 'en',
+  grouping = false
+): string {
+  const numeric = numericMinorUnitString(amountMinor, currency);
+  const presentation = grouping ? numeric : numeric.replace(/,/g, '');
+  return locale === 'bn' ? toBengaliNumerals(presentation) : presentation;
+}
+
+export function formatMinorUnits(amountMinor: number | bigint, currency: string, locale: 'bn' | 'en' = 'en'): string {
+  const normalizedCurrency = currency.trim().toUpperCase();
+  const numeric = numericMinorUnitString(amountMinor, normalizedCurrency);
   const localized = locale === 'bn' ? toBengaliNumerals(numeric) : numeric;
   const symbol = CURRENCY_SYMBOLS[normalizedCurrency] ?? `${normalizedCurrency} `;
-  return `${negative ? '-' : ''}${symbol}${localized}`;
+  return localized.startsWith('-') ? `-${symbol}${localized.slice(1)}` : `${symbol}${localized}`;
 }
 
 export function formatBasisPoints(basisPoints: number, locale: 'bn' | 'en' = 'en'): string {
@@ -188,6 +210,29 @@ export function formatBasisPoints(basisPoints: number, locale: 'bn' | 'en' = 'en
   const absolute = negative ? -value : value;
   const text = `${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}%`;
   return `${negative ? '-' : ''}${locale === 'bn' ? toBengaliNumerals(text) : text}`;
+}
+
+export type MoneyRoundingMode = 'toward_zero' | 'half_away_from_zero';
+
+function integerOperand(value: number | bigint, label: string): bigint {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new RangeError(`${label} must be a safe integer.`);
+    return BigInt(value);
+  }
+  return value;
+}
+
+function divideInteger(
+  numerator: bigint,
+  denominator: bigint,
+  rounding: MoneyRoundingMode
+): bigint {
+  if (denominator <= 0n) throw new RangeError('MONEY_ERR_INVALID_DENOMINATOR');
+  const quotient = numerator / denominator;
+  if (rounding === 'toward_zero') return quotient;
+  const remainder = numerator % denominator;
+  if (remainder === 0n || (remainder < 0n ? -remainder : remainder) * 2n < denominator) return quotient;
+  return quotient + (numerator < 0n ? -1n : 1n);
 }
 
 export class Money {
@@ -227,11 +272,10 @@ export class Money {
     return new Money(poisha, currency);
   }
 
-  static fromMajorUnits(taka: number, currency: string = 'BDT'): Money {
-    if (typeof taka !== 'number' || Number.isNaN(taka) || !Number.isFinite(taka)) {
-      throw new TypeError(`Major unit must be a finite number. Received: ${taka}`);
-    }
-    return new Money(Math.round(taka * 100), currency);
+  static fromMajorUnitString(value: string, currency: string = 'BDT'): Money {
+    const parsed = parseMoneyInput(value, currency);
+    if (!parsed.valid) throw new TypeError(`MONEY_ERR_INVALID_MAJOR_UNIT_STRING:${parsed.error}`);
+    return new Money(parsed.amountMinor, currency);
   }
 
   static zero(currency: string = 'BDT'): Money {
@@ -241,47 +285,58 @@ export class Money {
   // Arithmetic operations (immutable)
   add(other: Money): Money {
     this.assertSameCurrency(other, 'add');
-    return new Money(this.amount + other.amount, this.currency);
+    return new Money(BigInt(this.amount) + BigInt(other.amount), this.currency);
   }
 
   subtract(other: Money): Money {
     this.assertSameCurrency(other, 'subtract');
-    return new Money(this.amount - other.amount, this.currency);
+    return new Money(BigInt(this.amount) - BigInt(other.amount), this.currency);
   }
 
-  multiply(scalar: number): Money {
-    if (typeof scalar !== 'number' || Number.isNaN(scalar) || !Number.isFinite(scalar)) {
-      throw new TypeError(`Multiplier scalar must be a finite number. Received: ${scalar}`);
-    }
-    const result = Math.round(this.amount * scalar);
-    return new Money(result, this.currency);
+  multiplyRatio(
+    numerator: number | bigint,
+    denominator: number | bigint,
+    rounding: MoneyRoundingMode = 'half_away_from_zero'
+  ): Money {
+    const numeratorBig = integerOperand(numerator, 'numerator');
+    const denominatorBig = integerOperand(denominator, 'denominator');
+    return new Money(divideInteger(BigInt(this.amount) * numeratorBig, denominatorBig, rounding), this.currency);
+  }
+
+  multiplyBasisPoints(
+    basisPoints: number | bigint,
+    rounding: MoneyRoundingMode = 'half_away_from_zero'
+  ): Money {
+    return this.multiplyRatio(basisPoints, 10_000n, rounding);
   }
 
   /**
    * Distributes the money amount among ratios without losing a single poisha to rounding.
    */
   allocate(ratios: number[]): Money[] {
-    if (!ratios.length || ratios.some((r) => r < 0 || typeof r !== 'number' || !Number.isFinite(r))) {
-      throw new Error('Ratios must be an array of non-negative finite numbers with length > 0');
+    if (!ratios.length || ratios.some((ratio) => !Number.isSafeInteger(ratio) || ratio < 0)) {
+      throw new Error('Ratios must be non-negative safe integers with length > 0');
     }
-    const total = ratios.reduce((sum, r) => sum + r, 0);
-    if (total === 0) {
+    const ratioValues = ratios.map(BigInt);
+    const total = ratioValues.reduce((sum, ratio) => sum + ratio, 0n);
+    if (total === 0n) {
       throw new Error('Total ratio sum must be greater than zero');
     }
 
-    let remainder = this.amount;
+    const amount = BigInt(this.amount);
+    let remainder = amount;
     const results: Money[] = [];
 
-    for (let i = 0; i < ratios.length; i++) {
-      const share = Math.trunc((this.amount * ratios[i]) / total);
+    for (const ratio of ratioValues) {
+      const share = (amount * ratio) / total;
       results.push(new Money(share, this.currency));
       remainder -= share;
     }
 
     // Distribute remainder poisha one by one
-    for (let i = 0; remainder !== 0; i = (i + 1) % ratios.length) {
-      const step = remainder > 0 ? 1 : -1;
-      results[i] = new Money(results[i].amount + step, this.currency);
+    for (let i = 0; remainder !== 0n; i = (i + 1) % ratios.length) {
+      const step = remainder > 0n ? 1n : -1n;
+      results[i] = new Money(BigInt(results[i].amount) + step, this.currency);
       remainder -= step;
     }
 
@@ -312,8 +367,8 @@ export class Money {
     return 0;
   }
 
-  toMajorUnits(): number {
-    return this.amount / 100;
+  toMajorUnitString(locale: 'bn' | 'en' = 'en', grouping = false): string {
+    return minorUnitsToMajorUnitString(this.amount, this.currency, locale, grouping);
   }
 
   /**

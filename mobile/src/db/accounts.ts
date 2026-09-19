@@ -16,6 +16,7 @@ import {
   RawAccountWithBalanceRow,
 } from './types';
 import { isSupportedCurrency, Money } from '../domain/money';
+import { coerceSafeFinancialInteger, sumFinancialValues } from '../domain/integer-math';
 
 /**
  * Generates a unique, collision-resistant account ID.
@@ -117,9 +118,9 @@ export async function getAccountsWithBalances(
   );
 
   return rows.map((row) => {
-    const net = Number(row.transaction_net);
+    const net = coerceSafeFinancialInteger(row.transaction_net, 'account transaction net');
     const count = Number(row.transaction_count);
-    const currentBalancePoisha = row.initial_balance + net;
+    const currentBalancePoisha = sumFinancialValues([row.initial_balance, net], 'account balance');
 
     return {
       id: row.id,
@@ -180,9 +181,9 @@ export async function getAccountById(
     return null;
   }
 
-  const net = Number(row.transaction_net);
+  const net = coerceSafeFinancialInteger(row.transaction_net, 'account transaction net');
   const count = Number(row.transaction_count);
-  const currentBalancePoisha = row.initial_balance + net;
+  const currentBalancePoisha = sumFinancialValues([row.initial_balance, net], 'account balance');
 
   return {
     id: row.id,

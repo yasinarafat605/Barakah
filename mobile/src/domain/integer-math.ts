@@ -19,6 +19,20 @@ export function toSafeFinancialNumber(value: bigint, label: string): number {
   return Number(value);
 }
 
+export function coerceSafeFinancialInteger(value: unknown, label: string): number {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new FinancialIntegrityError(`${label} is outside the safe integer boundary.`);
+    }
+    return value;
+  }
+  if (typeof value === 'bigint') return toSafeFinancialNumber(value, label);
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+    return toSafeFinancialNumber(BigInt(value), label);
+  }
+  throw new FinancialIntegrityError(`${label} is not an integer minor-unit value.`);
+}
+
 export function sumFinancialValues(values: readonly number[], label: string): number {
   const total = values.reduce((sum, value, index) => sum + toFinancialBigInt(value, `${label}[${index}]`), 0n);
   return toSafeFinancialNumber(total, label);

@@ -250,7 +250,7 @@ export default function DebtsDashboardScreen() {
           ) : (
             Object.entries(summary.totalBorrowedByCurrency).map(([curr, amount]) => (
               <Text key={curr} style={[styles.summaryCardAmount, { color: theme.text }]}>
-                {new Money(Number(amount)).format(currentLocale)}
+                {new Money(amount, curr).format(currentLocale)}
               </Text>
             ))
           )}
@@ -271,7 +271,7 @@ export default function DebtsDashboardScreen() {
           ) : (
             Object.entries(summary.totalLentByCurrency).map(([curr, amount]) => (
               <Text key={curr} style={[styles.summaryCardAmount, { color: theme.primary }]}>
-                {new Money(Number(amount)).format(currentLocale)}
+                {new Money(amount, curr).format(currentLocale)}
               </Text>
             ))
           )}

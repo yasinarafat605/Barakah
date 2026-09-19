@@ -14,6 +14,9 @@ describe('Bilingual Money Parsing (ADR-004 & Milestone 2 Specs)', () => {
   });
 
   describe('parseMoneyInput valid inputs', () => {
+    it('parses a human-entered major-unit string to integer minor units', () => {
+      expect(parseMoneyInput('123.45', 'BDT')).toEqual({ valid: true, amountMinor: 12345 });
+    });
     it('parses valid Bengali numerals with dot separator', () => {
       const result = parseMoneyInput('১০০.৫০');
       expect(result).toEqual({ valid: true, amountMinor: 10050 });
@@ -52,6 +55,27 @@ describe('Bilingual Money Parsing (ADR-004 & Milestone 2 Specs)', () => {
       expect(parseMoneyInput('0.01')).toEqual({ valid: true, amountMinor: 1 });
       expect(parseMoneyInput('.01')).toEqual({ valid: true, amountMinor: 1 });
       expect(parseMoneyInput('০.০১')).toEqual({ valid: true, amountMinor: 1 });
+    });
+
+    it('accepts the maximum safe integer minor-unit boundary exactly', () => {
+      expect(parseMoneyInput('90071992547409.91', 'BDT')).toEqual({
+        valid: true,
+        amountMinor: Number.MAX_SAFE_INTEGER,
+      });
+      expect(parseMoneyInput('90071992547409.92', 'BDT')).toEqual({
+        valid: false,
+        amountMinor: 0,
+        error: 'exceeds_bounds',
+      });
+    });
+
+    it('allows zero only when the caller explicitly permits it', () => {
+      expect(parseMoneyInput('0.00', 'BDT', { allowZero: true })).toEqual({ valid: true, amountMinor: 0 });
+      expect(parseMoneyInput('-0.01', 'BDT', { allowZero: true }).error).toBe('signed');
+    });
+
+    it('rejects unsupported currencies before parsing monetary input', () => {
+      expect(() => parseMoneyInput('1.00', 'XYZ')).toThrow('MONEY_ERR_UNSUPPORTED_CURRENCY');
     });
   });
 

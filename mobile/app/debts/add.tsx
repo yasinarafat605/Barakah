@@ -110,9 +110,9 @@ export default function AddDebtScreen() {
   const parsedAmount = useMemo<number | null>(() => {
     const trimmed = amountStr.trim();
     if (!trimmed) return null;
-    const res = parseMoneyInput(trimmed, 2);
+    const res = parseMoneyInput(trimmed, currency);
     return res.valid ? res.amountMinor : null;
-  }, [amountStr]);
+  }, [amountStr, currency]);
 
   const selectedAccount = useMemo(
     () => accounts.find((a) => a.id === selectedAccountId),
