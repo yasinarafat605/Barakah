@@ -53,6 +53,7 @@ export async function createTransferInTransaction(
   const destinationId = generateTxId('tr_dst');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) throw new Error('TRANSACTION_ERR_UNSAFE_TIMESTAMP');
   const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
   assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;
@@ -84,8 +85,8 @@ export async function createIncomeTransaction(
 ): Promise<TransactionRow> {
   const db = customDb ?? (await getDatabase());
 
-  if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
-    throw new TypeError(`Transaction amount must be a positive integer in minor units. Received: ${input.amountMinor}`);
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+    throw new TypeError(`Transaction amount must be a positive safe integer in minor units. Received: ${input.amountMinor}`);
   }
 
   const account = await getAccountById(input.accountId, db);
@@ -108,6 +109,7 @@ export async function createIncomeTransaction(
   const id = generateTxId('inc');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) throw new Error('TRANSACTION_ERR_UNSAFE_TIMESTAMP');
   const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
   assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;
@@ -153,8 +155,8 @@ export async function createExpenseTransaction(
 ): Promise<TransactionRow> {
   const db = customDb ?? (await getDatabase());
 
-  if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
-    throw new TypeError(`Transaction amount must be a positive integer in minor units. Received: ${input.amountMinor}`);
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+    throw new TypeError(`Transaction amount must be a positive safe integer in minor units. Received: ${input.amountMinor}`);
   }
 
   const account = await getAccountById(input.accountId, db);
@@ -177,6 +179,7 @@ export async function createExpenseTransaction(
   const id = generateTxId('exp');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) throw new Error('TRANSACTION_ERR_UNSAFE_TIMESTAMP');
   const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
   assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;
@@ -237,8 +240,8 @@ export async function createTransfer(
     throw new Error('Source and destination accounts must be different for a transfer.');
   }
 
-  if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
-    throw new TypeError(`Transfer amount must be a positive integer in minor units. Received: ${input.amountMinor}`);
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+    throw new TypeError(`Transfer amount must be a positive safe integer in minor units. Received: ${input.amountMinor}`);
   }
 
   const sourceAccount = await getAccountById(input.sourceAccountId, db);
@@ -265,6 +268,7 @@ export async function createTransfer(
   const destTxId = generateTxId('tr_dst');
   const now = Date.now();
   const timestamp = input.occurredAt ?? input.timestamp ?? now;
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) throw new Error('TRANSACTION_ERR_UNSAFE_TIMESTAMP');
   const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(timestamp);
   assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note?.trim() || null;

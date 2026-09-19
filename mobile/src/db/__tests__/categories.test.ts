@@ -132,8 +132,8 @@ describe('Categories Repository (Milestone 2)', () => {
       );
 
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_cat_test', 'acc_1', 'cat_inc_salary_wages', 10000, 'income', now, now
       );
 
@@ -168,8 +168,8 @@ describe('Categories Repository (Milestone 2)', () => {
       );
 
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_with_cat', 'acc_test_del', custom.id, 500, 'income', now, now
       );
 

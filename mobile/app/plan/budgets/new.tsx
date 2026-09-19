@@ -1,112 +1,27 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack, useRouter } from 'expo-router';
-import { useTranslation } from 'react-i18next';
-import { createBudget, getAccounts, getBudgets, getCategories } from '@/src/db';
-import type { AccountWithBalance, BudgetRow, CategoryRow } from '@/src/db/types';
-import { parseMoneyInput } from '@/src/domain/money';
-
-function minor(value: string): number {
-  const result = parseMoneyInput(value);
-  if (!result.valid) throw new Error(result.error);
-  return result.amountMinor;
-}
-
-function currentMonth(): { start: string; end: string } {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const format = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  return { start: format(new Date(year, month, 1)), end: format(new Date(year, month + 1, 0)) };
-}
-
-export default function NewBudget() {
-  const router = useRouter();
-  const { t } = useTranslation();
-  const defaults = useMemo(currentMonth, []);
-  const [name, setName] = useState('');
-  const [periodType, setPeriodType] = useState<'monthly' | 'custom'>('monthly');
-  const [start, setStart] = useState(defaults.start);
-  const [end, setEnd] = useState(defaults.end);
-  const [limit, setLimit] = useState('');
-  const [income, setIncome] = useState('');
-  const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
-  const [categories, setCategories] = useState<CategoryRow[]>([]);
-  const [priorBudgets, setPriorBudgets] = useState<BudgetRow[]>([]);
-  const [allocations, setAllocations] = useState<Record<string, string>>({});
-  const [accountId, setAccountId] = useState<string | null>(null);
-  const [rollover, setRollover] = useState(false);
-  const [rolloverSourceId, setRolloverSourceId] = useState<string | null>(null);
-
-  useEffect(() => {
-    Promise.all([getAccounts(), getCategories({ type: 'expense', isArchived: false }), getBudgets({ archived: false })])
-      .then(([rows, categoryRows, budgetRows]) => {
-        setAccounts(rows.filter((account) => account.archived_at === null));
-        setCategories(categoryRows);
-        setPriorBudgets(budgetRows);
-      })
-      .catch(console.error);
-  }, []);
-
-  const selectedAccount = accounts.find((account) => account.id === accountId);
-  const currency = selectedAccount?.currency ?? 'BDT';
-  const eligibleSources = priorBudgets.filter((budget) =>
-    budget.currency === currency && budget.account_id === accountId && budget.ends_on < start && budget.expense_limit !== null
-  );
-
-  const save = async () => {
-    try {
-      const planned = categories
-        .filter((category) => allocations[category.id]?.trim())
-        .map((category) => ({ categoryId: category.id, amountMinor: minor(allocations[category.id]) }));
-      await createBudget({
-        name,
-        periodType,
-        startsOn: start,
-        endsOn: end,
-        currency,
-        accountId,
-        incomeTargetMinor: income.trim() ? minor(income) : null,
-        expenseLimitMinor: limit.trim() ? minor(limit) : null,
-        rolloverPolicy: rollover ? 'unspent_only' : 'none',
-        rolloverFromBudgetId: rollover ? rolloverSourceId : null,
-        categories: planned,
-      });
-      router.back();
-    } catch (error) {
-      Alert.alert(t('planning.budgetNotSaved'), error instanceof Error ? error.message : t('status.error'));
-    }
-  };
-
-  return <SafeAreaView style={styles.safe}>
-    <Stack.Screen options={{ title: t('planning.newBudget') }} />
-    <ScrollView contentContainerStyle={styles.body}>
-      <Text style={styles.label}>{t('planning.nameOptional')}</Text>
-      <TextInput style={styles.input} value={name} onChangeText={setName} />
-      <Text style={styles.label}>{t('planning.period')}</Text>
-      <TouchableOpacity accessibilityRole="button" style={[styles.choice, periodType === 'monthly' && styles.selected]} onPress={() => setPeriodType('monthly')}><Text>{t('planning.monthly')}</Text></TouchableOpacity>
-      <TouchableOpacity accessibilityRole="button" style={[styles.choice, periodType === 'custom' && styles.selected]} onPress={() => setPeriodType('custom')}><Text>{t('planning.custom')}</Text></TouchableOpacity>
-      <Text style={styles.label}>{t('planning.startsOn')}</Text>
-      <TextInput style={styles.input} value={start} onChangeText={setStart} autoCapitalize="none" />
-      <Text style={styles.label}>{t('planning.endsOn')}</Text>
-      <TextInput style={styles.input} value={end} onChangeText={setEnd} autoCapitalize="none" />
-      <Text style={styles.label}>{t('planning.incomeTargetOptional')}</Text>
-      <TextInput style={styles.input} keyboardType="decimal-pad" value={income} onChangeText={setIncome} />
-      <Text style={styles.label}>{t('planning.expenseLimitOptional')}</Text>
-      <TextInput style={styles.input} keyboardType="decimal-pad" value={limit} onChangeText={setLimit} />
-      <Text style={styles.label}>{t('planning.categoryAllocations')}</Text>
-      {categories.map((category) => <TextInput key={category.id} style={styles.input} keyboardType="decimal-pad" value={allocations[category.id] ?? ''} onChangeText={(value) => setAllocations((current) => ({ ...current, [category.id]: value }))} placeholder={category.name_custom || t(category.name_key)} />)}
-      <Text style={styles.label}>{t('planning.scope')}</Text>
-      <TouchableOpacity accessibilityRole="button" style={[styles.choice, !accountId && styles.selected]} onPress={() => { setAccountId(null); setRolloverSourceId(null); }}><Text>{t('planning.allCurrencyAccounts', { currency: 'BDT' })}</Text></TouchableOpacity>
-      {accounts.map((account) => <TouchableOpacity accessibilityRole="button" key={account.id} style={[styles.choice, accountId === account.id && styles.selected]} onPress={() => { setAccountId(account.id); setRolloverSourceId(null); }}><Text>{account.name} ({account.currency})</Text></TouchableOpacity>)}
-      <Text style={styles.label}>{t('planning.rollover')}</Text>
-      <TouchableOpacity accessibilityRole="button" style={[styles.choice, !rollover && styles.selected]} onPress={() => { setRollover(false); setRolloverSourceId(null); }}><Text>{t('planning.noRollover')}</Text></TouchableOpacity>
-      <TouchableOpacity accessibilityRole="button" style={[styles.choice, rollover && styles.selected]} onPress={() => setRollover(true)}><Text>{t('planning.unspentOnly')}</Text></TouchableOpacity>
-      {rollover && <><Text style={styles.label}>{t('planning.rolloverSource')}</Text>{eligibleSources.map((budget) => <TouchableOpacity accessibilityRole="button" key={budget.id} style={[styles.choice, rolloverSourceId === budget.id && styles.selected]} onPress={() => setRolloverSourceId(budget.id)}><Text>{budget.name || `${budget.starts_on} – ${budget.ends_on}`}</Text></TouchableOpacity>)}</>}
-      <TouchableOpacity accessibilityRole="button" accessibilityLabel={t('planning.saveBudget')} style={styles.button} onPress={save}><Text style={styles.buttonText}>{t('planning.saveBudget')}</Text></TouchableOpacity>
-    </ScrollView>
-  </SafeAreaView>;
-}
-
-const styles = StyleSheet.create({ safe: { flex: 1, backgroundColor: '#F6F8F7' }, body: { padding: 20, gap: 9 }, label: { fontWeight: '600', marginTop: 6 }, input: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#D7DEDA', borderRadius: 10, padding: 12 }, choice: { backgroundColor: '#fff', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#D7DEDA' }, selected: { borderColor: '#087A62', borderWidth: 2 }, button: { backgroundColor: '#087A62', padding: 15, borderRadius: 12, alignItems: 'center', marginTop: 14 }, buttonText: { color: '#fff', fontWeight: '700' } });
+import React,{useEffect,useMemo,useRef,useState} from 'react';
+import {Alert,KeyboardAvoidingView,Platform,ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
+import {SafeAreaView} from 'react-native-safe-area-context'; import {Stack,useLocalSearchParams,useRouter} from 'expo-router'; import {useTranslation} from 'react-i18next';
+import {createBudget,getAccounts,getBudgetById,getBudgetCategories,getBudgets,getCategories,updateBudget} from '@/src/db';
+import type {AccountWithBalance,BudgetRow,CategoryRow} from '@/src/db/types'; import {formatMinorUnits,parseMoneyInput,SUPPORTED_CURRENCIES} from '@/src/domain/money'; import {planningErrorMessage} from '@/src/domain/planning-error'; import {Colors} from '@/src/constants/theme'; import {useColorScheme} from '@/hooks/use-color-scheme';
+import {useDirtyFormGuard} from '@/hooks/use-dirty-form-guard';
+function currentMonth(){const n=new Date(),f=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return{start:f(new Date(n.getFullYear(),n.getMonth(),1)),end:f(new Date(n.getFullYear(),n.getMonth()+1,0))};}
+const editable=(v:number|null,c:string)=>v===null?'':formatMinorUnits(v,c,'en').replace(/^[^0-9]*/,'').replace(/,/g,'');
+export default function BudgetForm(){const {editId}=useLocalSearchParams<{editId?:string}>();const router=useRouter(),{t,i18n}=useTranslation(),theme=Colors[useColorScheme()??'light'];const locale=i18n.language.startsWith('bn')?'bn':'en',defaults=useMemo(currentMonth,[]);
+ const [name,setName]=useState(''),[periodType,setPeriodType]=useState<'monthly'|'custom'>('monthly'),[start,setStart]=useState(defaults.start),[end,setEnd]=useState(defaults.end),[limit,setLimit]=useState(''),[income,setIncome]=useState(''),[note,setNote]=useState(''),[currency,setCurrency]=useState(''),[accounts,setAccounts]=useState<AccountWithBalance[]>([]),[categories,setCategories]=useState<CategoryRow[]>([]),[prior,setPrior]=useState<BudgetRow[]>([]),[allocations,setAllocations]=useState<Record<string,string>>({}),[accountId,setAccountId]=useState<string|null>(null),[rollover,setRollover]=useState(false),[source,setSource]=useState<string|null>(null),[saving,setSaving]=useState(false),[loaded,setLoaded]=useState(!editId);
+ const submitting=useRef(false);
+ const snapshot=JSON.stringify({name,periodType,start,end,limit,income,note,currency,allocations,accountId,rollover,source}),baseline=useRef<string|null>(null);useEffect(()=>{if(loaded&&baseline.current===null)baseline.current=snapshot;},[loaded,snapshot]);const allowExit=useDirtyFormGuard(baseline.current!==null&&baseline.current!==snapshot,t('planning.discardTitle'),t('planning.discardMessage'),t('actions.cancel'),t('planning.discard'));
+ useEffect(()=>{Promise.all([getAccounts(),getCategories({type:'expense',isArchived:false}),getBudgets({archived:false}),editId?getBudgetById(editId):Promise.resolve(null),editId?getBudgetCategories(editId):Promise.resolve([])]).then(([a,c,b,row,bc])=>{setAccounts(a.filter(x=>x.archived_at===null));setCategories(c);setPrior(b);if(row){setName(row.name??'');setPeriodType(row.period_type);setStart(row.starts_on);setEnd(row.ends_on);setCurrency(row.currency);setAccountId(row.account_id);setIncome(editable(row.income_target,row.currency));setLimit(editable(row.expense_limit,row.currency));setNote(row.note??'');setRollover(row.rollover_policy==='unspent_only');setSource(row.rollover_from_budget_id);setAllocations(Object.fromEntries(bc.map(x=>[x.category_id,editable(x.amount,row.currency)])));}setLoaded(true);}).catch(e=>Alert.alert(t('planning.budgetUnavailable'),planningErrorMessage(e,t)));},[editId,t]);
+ const parse=(v:string)=>{const p=parseMoneyInput(v,currency);if(!p.valid)throw new Error('BUDGET_ERR_INVALID_AMOUNT');return p.amountMinor;};const planned=()=>categories.filter(c=>allocations[c.id]?.trim()).map((c,i)=>({categoryId:c.id,amountMinor:parse(allocations[c.id]),sortOrder:i}));
+ const totals=useMemo(()=>{if(!currency)return{allocated:0,unallocated:null as number|null};try{const sum=Object.values(allocations).filter(Boolean).reduce((s,v)=>s+BigInt(parseMoneyInput(v,currency).valid?parseMoneyInput(v,currency).amountMinor:0),0n);const lp=limit.trim()?parseMoneyInput(limit,currency):null;return{allocated:Number(sum),unallocated:lp?.valid?Number(BigInt(lp.amountMinor)-sum):null};}catch{return{allocated:0,unallocated:null};}},[allocations,limit,currency]);
+ const eligible=prior.filter(b=>b.id!==editId&&b.currency===currency&&b.account_id===accountId&&b.ends_on<start&&b.expense_limit!==null);const submit=async()=>{if(submitting.current)return;submitting.current=true;try{if(!currency)throw new Error('BUDGET_ERR_INVALID_CURRENCY');setSaving(true);const input={name,periodType,startsOn:start,endsOn:end,currency,accountId,incomeTargetMinor:income.trim()?parse(income):null,expenseLimitMinor:limit.trim()?parse(limit):null,rolloverPolicy:rollover?'unspent_only' as const:'none' as const,rolloverFromBudgetId:rollover?source:null,note,categories:planned()};if(editId)await updateBudget(editId,input);else await createBudget(input);allowExit();router.back();}catch(e){Alert.alert(t('planning.budgetNotSaved'),planningErrorMessage(e,t));}finally{submitting.current=false;setSaving(false);}};
+ const review=()=>{try{const p=planned();if(!income.trim()&&!limit.trim()&&!p.length)throw new Error('BUDGET_ERR_TARGET_REQUIRED');Alert.alert(t('planning.reviewBudget'),`${name||t('planning.budget')}\n${start} – ${end}\n${currency}\n${t('planning.allocationTotal')}: ${formatMinorUnits(totals.allocated,currency,locale)}`,[{text:t('actions.cancel'),style:'cancel'},{text:t('actions.confirm'),onPress:submit}]);}catch(e){Alert.alert(t('planning.budgetNotSaved'),planningErrorMessage(e,t));}};
+ const chooseAccount=(a:AccountWithBalance)=>{setAccountId(a.id);setCurrency(a.currency);setSource(null);};const choice=(on:boolean)=>[styles.choice,{backgroundColor:theme.surface,borderColor:on?theme.primary:theme.border}],input=[styles.input,{backgroundColor:theme.surface,borderColor:theme.border,color:theme.text}];if(!loaded)return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Text style={{padding:20,color:theme.text}}>{t('status.loading')}</Text></SafeAreaView>;
+ return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Stack.Screen options={{title:t(editId?'planning.editBudget':'planning.newBudget')}}/><KeyboardAvoidingView style={styles.safe} behavior={Platform.OS==='ios'?'padding':undefined}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.body}><Text style={[styles.label,{color:theme.text}]}>{t('planning.nameOptional')}</Text><TextInput accessibilityLabel={t('planning.nameOptional')} style={input} value={name} onChangeText={setName}/>
+ <Text style={[styles.label,{color:theme.text}]}>{t('planning.scope')}</Text><TouchableOpacity accessibilityRole="radio" accessibilityState={{checked:accountId===null}} style={choice(accountId===null)} onPress={()=>{setAccountId(null);setCurrency('');setSource(null);}}><Text style={{color:theme.text}}>{t('planning.globalScope')}</Text></TouchableOpacity>{accounts.map(a=><TouchableOpacity key={a.id} accessibilityRole="radio" accessibilityState={{checked:accountId===a.id}} style={choice(accountId===a.id)} onPress={()=>chooseAccount(a)}><Text style={{color:theme.text}}>{a.name} ({a.currency})</Text></TouchableOpacity>)}
+ {accountId===null&&<><Text style={[styles.label,{color:theme.text}]}>{t('planning.currency')}</Text>{SUPPORTED_CURRENCIES.map(c=><TouchableOpacity key={c} accessibilityRole="radio" accessibilityState={{checked:currency===c}} style={choice(currency===c)} onPress={()=>{setCurrency(c);setSource(null);}}><Text style={{color:theme.text}}>{c}</Text></TouchableOpacity>)}</>}
+ <Text style={[styles.label,{color:theme.text}]}>{t('planning.period')}</Text>{(['monthly','custom'] as const).map(v=><TouchableOpacity key={v} accessibilityRole="radio" accessibilityState={{checked:periodType===v}} style={choice(periodType===v)} onPress={()=>setPeriodType(v)}><Text style={{color:theme.text}}>{t(`planning.${v}`)}</Text></TouchableOpacity>)}<Text style={[styles.label,{color:theme.text}]}>{t('planning.startsOn')}</Text><TextInput accessibilityLabel={t('planning.startsOn')} style={input} value={start} onChangeText={setStart}/><Text style={[styles.label,{color:theme.text}]}>{t('planning.endsOn')}</Text><TextInput accessibilityLabel={t('planning.endsOn')} style={input} value={end} onChangeText={setEnd}/>
+ <Text style={[styles.label,{color:theme.text}]}>{t('planning.incomeTargetOptional')}</Text><TextInput accessibilityLabel={t('planning.incomeTargetOptional')} style={input} keyboardType="decimal-pad" value={income} onChangeText={setIncome}/><Text style={[styles.label,{color:theme.text}]}>{t('planning.expenseLimitOptional')}</Text><TextInput accessibilityLabel={t('planning.expenseLimitOptional')} style={input} keyboardType="decimal-pad" value={limit} onChangeText={setLimit}/><Text style={[styles.label,{color:theme.text}]}>{t('planning.categoryAllocations')}</Text>{categories.map(c=><TextInput key={c.id} accessibilityLabel={c.name_custom||t(c.name_key)} style={input} keyboardType="decimal-pad" value={allocations[c.id]??''} onChangeText={v=>setAllocations(x=>({...x,[c.id]:v}))} placeholder={c.name_custom||t(c.name_key)}/>)}
+ {currency&&<View style={[styles.summary,{backgroundColor:theme.surfaceTinted}]}><Text style={{color:theme.text}}>{t('planning.allocationTotal')}: {formatMinorUnits(totals.allocated,currency,locale)}</Text><Text style={{color:theme.text}}>{t('planning.unallocated')}: {totals.unallocated===null?'—':formatMinorUnits(totals.unallocated,currency,locale)}</Text></View>}
+ <Text style={[styles.label,{color:theme.text}]}>{t('planning.rollover')}</Text><TouchableOpacity style={choice(!rollover)} onPress={()=>{setRollover(false);setSource(null);}}><Text style={{color:theme.text}}>{t('planning.noRollover')}</Text></TouchableOpacity><TouchableOpacity style={choice(rollover)} onPress={()=>setRollover(true)}><Text style={{color:theme.text}}>{t('planning.unspentOnly')}</Text></TouchableOpacity>{rollover&&eligible.map(b=><TouchableOpacity key={b.id} style={choice(source===b.id)} onPress={()=>setSource(b.id)}><Text style={{color:theme.text}}>{b.name||`${b.starts_on} – ${b.ends_on}`}</Text></TouchableOpacity>)}<Text style={[styles.label,{color:theme.text}]}>{t('planning.noteOptional')}</Text><TextInput accessibilityLabel={t('planning.noteOptional')} multiline style={[input,styles.note]} value={note} onChangeText={setNote}/>
+ <TouchableOpacity disabled={saving} accessibilityRole="button" accessibilityState={{disabled:saving}} style={[styles.button,{backgroundColor:theme.primary},saving&&styles.disabled]} onPress={review}><Text style={styles.white}>{saving?t('status.loading'):t('planning.review')}</Text></TouchableOpacity></ScrollView></KeyboardAvoidingView></SafeAreaView>}
+const styles=StyleSheet.create({safe:{flex:1},body:{padding:20,gap:9},label:{fontWeight:'600',marginTop:6},input:{borderWidth:1,borderRadius:10,padding:12,minHeight:48},note:{minHeight:80,textAlignVertical:'top'},choice:{padding:12,minHeight:48,borderRadius:10,borderWidth:2,justifyContent:'center'},summary:{padding:14,borderRadius:10,gap:6},button:{padding:14,minHeight:48,borderRadius:12,alignItems:'center',marginTop:12},white:{color:'#fff',fontWeight:'700'},disabled:{opacity:.55}});

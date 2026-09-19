@@ -173,8 +173,8 @@ describe('Migration 003: Debts, Liabilities & Counterparties', () => {
       'acc_uq_test', 'Test Acc', now, now
     );
     await db.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, created_at, updated_at)
-       VALUES (?, 'acc_uq_test', 'cat_exp_food_groceries', 5000, 'expense', ?, ?, ?);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, timestamp, occurred_on, created_at, updated_at)
+       VALUES (?, 'acc_uq_test', 'cat_exp_food_groceries', 5000, 'expense', ?, '2026-01-01', ?, ?);`,
       'tx_single', now, now, now
     );
 

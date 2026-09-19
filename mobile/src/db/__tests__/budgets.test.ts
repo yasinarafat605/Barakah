@@ -4,7 +4,7 @@ import { createAccount } from '../accounts';
 import { createExpenseTransaction, softDeleteTransaction, restoreTransaction } from '../transactions';
 import { createCounterparty } from '../counterparties';
 import { createDebt, recordRepayment } from '../debts';
-import { createBudget, getBudgetCategories, getBudgetPerformance, restoreBudgetCategory, softDeleteBudgetCategory, updateBudget } from '../budgets';
+import { archiveBudget, createBudget, getBudgetCategories, getBudgetPerformance, restoreBudgetCategory, softDeleteBudgetCategory, updateBudget } from '../budgets';
 import type { DatabaseConnection } from '../types';
 
 describe('Budget repository and reconciled debt actuals', () => {
@@ -77,6 +77,46 @@ describe('Budget repository and reconciled debt actuals', () => {
     await updateBudget(budget.id,{periodType:'monthly',startsOn:'2026-03-01',endsOn:'2026-03-31',currency:'BDT',accountId:account.id,expenseLimitMinor:200,categories:[]},db);
     await expect(restoreBudgetCategory(allocation.id,db)).rejects.toThrow(/exceed/i);
     await updateBudget(budget.id,{periodType:'monthly',startsOn:'2026-03-01',endsOn:'2026-03-31',currency:'BDT',accountId:account.id,expenseLimitMinor:500,categories:[{categoryId:'cat_exp_food_groceries',amountMinor:250}]},db);
+    expect(await getBudgetCategories(budget.id,db)).toHaveLength(1);
+  });
+
+  it('locks period, currency, and account scope after qualifying activity',async()=>{
+    const account=await createAccount({name:'Cash',type:'cash',initialBalancePoisha:1000,currency:'BDT'},db);
+    const other=await createAccount({name:'Other',type:'cash',initialBalancePoisha:1000,currency:'BDT'},db);
+    const budget=await createBudget({periodType:'monthly',startsOn:'2026-04-01',endsOn:'2026-04-30',currency:'BDT',accountId:account.id,expenseLimitMinor:500},db);
+    await createExpenseTransaction({accountId:account.id,categoryId:'cat_exp_food_groceries',amountMinor:10,occurredOn:'2026-04-10'},db);
+    const base={periodType:'monthly' as const,startsOn:'2026-04-01',endsOn:'2026-04-30',currency:'BDT',accountId:account.id,expenseLimitMinor:500};
+    await expect(updateBudget(budget.id,{...base,startsOn:'2026-04-02'},db)).rejects.toThrow(/ACTIVITY_LOCKED/);
+    await expect(updateBudget(budget.id,{...base,currency:'USD'},db)).rejects.toThrow(/ACTIVITY_LOCKED/);
+    await expect(updateBudget(budget.id,{...base,accountId:other.id},db)).rejects.toThrow(/ACTIVITY_LOCKED/);
+    await expect(updateBudget(budget.id,{...base,name:'Renamed'},db)).resolves.toMatchObject({name:'Renamed'});
+  });
+
+  it('rejects archived budget and allocation mutations',async()=>{
+    const budget=await createBudget({periodType:'monthly',startsOn:'2026-05-01',endsOn:'2026-05-31',currency:'BDT',expenseLimitMinor:500,categories:[{categoryId:'cat_exp_food_groceries',amountMinor:100}]},db);
+    const [allocation]=await getBudgetCategories(budget.id,db);
+    await archiveBudget(budget.id,db);
+    await expect(updateBudget(budget.id,{periodType:'monthly',startsOn:'2026-05-01',endsOn:'2026-05-31',currency:'BDT',expenseLimitMinor:500},db)).rejects.toThrow(/ARCHIVED/);
+    await expect(softDeleteBudgetCategory(allocation.id,db)).rejects.toThrow(/ARCHIVED/);
+  });
+
+  it('prevents deleting the last meaningful category-only allocation',async()=>{
+    const budget=await createBudget({periodType:'monthly',startsOn:'2026-06-01',endsOn:'2026-06-30',currency:'BDT',categories:[{categoryId:'cat_exp_food_groceries',amountMinor:100}]},db);
+    const [allocation]=await getBudgetCategories(budget.id,db);
+    await expect(softDeleteBudgetCategory(allocation.id,db)).rejects.toThrow(/TARGET_REQUIRED/);
+    expect(await getBudgetCategories(budget.id,db)).toHaveLength(1);
+  });
+
+  it.each(['BDT','GBP','USD'])('creates a global %s budget without mixing currency scope',async(currency)=>{
+    const budget=await createBudget({periodType:'monthly',startsOn:'2027-01-01',endsOn:'2027-01-31',currency,expenseLimitMinor:500},db);
+    expect(budget).toMatchObject({currency,account_id:null});
+  });
+
+  it('serializes concurrent last-allocation deletion attempts without losing the target',async()=>{
+    const budget=await createBudget({periodType:'monthly',startsOn:'2026-07-01',endsOn:'2026-07-31',currency:'BDT',categories:[{categoryId:'cat_exp_food_groceries',amountMinor:100}]},db);
+    const [allocation]=await getBudgetCategories(budget.id,db);
+    const results=await Promise.allSettled([softDeleteBudgetCategory(allocation.id,db),softDeleteBudgetCategory(allocation.id,db)]);
+    expect(results.every((result)=>result.status==='rejected')).toBe(true);
     expect(await getBudgetCategories(budget.id,db)).toHaveLength(1);
   });
 });

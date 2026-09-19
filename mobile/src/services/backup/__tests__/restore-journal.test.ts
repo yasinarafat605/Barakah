@@ -179,7 +179,7 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
     const destMigrations = await stagingDb.getAllAsync<{ version: number; checksum: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version ASC;'
     );
-    expect(destMigrations.length).toBe(8);
+    expect(destMigrations.length).toBe(9);
     for (const m of destMigrations) {
       expect(m.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[m.version]);
     }
@@ -246,7 +246,7 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
     const cols = await stagingDb4.getAllAsync<{ name: string }>('PRAGMA table_info(backup_history);');
     expect(cols.length).toBeGreaterThan(0); // backup_history table created by migration 005
     const rows = await stagingDb4.getAllAsync<{ version: number; checksum: string }>('SELECT version, checksum FROM schema_migrations;');
-    expect(rows.length).toBe(8);
+    expect(rows.length).toBe(9);
     expect(rows.find(r => r.version === 7)?.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[7]);
 
     // 2. Emulate a schema-5 backup manifest
@@ -266,7 +266,7 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
 
     await populateAndVerifyStagingDatabase(stagingDb5, mockManifestV5 as any);
     const rows5 = await stagingDb5.getAllAsync<{ version: number }>('SELECT version FROM schema_migrations;');
-    expect(rows5.length).toBe(8);
+    expect(rows5.length).toBe(9);
   });
 
   it('Migration-ledger policy: verifies destination ledger against canonical checksums while comparing financial tables independently', async () => {
@@ -598,8 +598,8 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
       now, now, now
     );
     await liveDb.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_e2e_1', 'acc_e2e_1', 'cat_salary', 50000, 'income', NULL, NULL, NULL, 'Payment received', ?, ?, ?, NULL);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+       VALUES ('tx_e2e_1', 'acc_e2e_1', 'cat_salary', 50000, 'income', NULL, NULL, NULL, 'Payment received', ?, '2026-01-01', ?, ?, NULL);`,
       now, now, now
     );
 
@@ -614,8 +614,8 @@ describe('Restore Journal & Crash Recovery Deterministic Unit/Integration Simula
 
     // 3. Mutate live data
     await liveDb.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_e2e_mutated', 'acc_e2e_1', 'cat_salary', 999999, 'income', NULL, NULL, NULL, 'Unsaved transaction', ?, ?, ?, NULL);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+       VALUES ('tx_e2e_mutated', 'acc_e2e_1', 'cat_salary', 999999, 'income', NULL, NULL, NULL, 'Unsaved transaction', ?, '2026-01-01', ?, ?, NULL);`,
       now + 1000, now + 1000, now + 1000
     );
     const mutatedTxCount = await liveDb.getFirstAsync<{ c: number }>('SELECT count(*) as c FROM transactions;');

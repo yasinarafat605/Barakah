@@ -7,6 +7,7 @@ import { migration004 } from '../migrations/004_debt_ledger_integrity_upgrade';
 import { migration005 } from '../migrations/005_backup_metadata_and_checksums';
 import { migration006 } from '../migrations/006_backup_integrity_hardening';
 import { migration007 } from '../migrations/007_backup_export_statuses';
+import { migration008 } from '../migrations/008_planning_foundation';
 import { CANONICAL_MIGRATION_CHECKSUMS } from '../migrations/registry';
 
 describe('Migration 008 planning foundation', () => {
@@ -22,8 +23,7 @@ describe('Migration 008 planning foundation', () => {
     }
     await db.runAsync("INSERT INTO accounts(id,name,type,initial_balance,currency,created_at,updated_at) VALUES('a','Cash','cash',0,'BDT',1,1);");
     await db.runAsync("INSERT INTO transactions(id,account_id,category_id,amount,type,transfer_id,transfer_role,related_account_id,note,timestamp,created_at,updated_at,deleted_at) VALUES('t','a','cat_exp_food_groceries',1,'expense',NULL,NULL,NULL,NULL,1704067199000,1,1,NULL);");
-    const result = await runMigrations(db);
-    expect(result.versions).toEqual([8]);
+    await migration008.up(db);
     expect((await db.getFirstAsync<{ occurred_on: string }>("SELECT occurred_on FROM transactions WHERE id='t';"))?.occurred_on).toBe('2023-12-31');
     const budgetColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(budgets);');
     expect(budgetColumns.map((column) => column.name)).toContain('archived_at');
@@ -33,7 +33,10 @@ describe('Migration 008 planning foundation', () => {
 
   it('enforces strict civil dates and derives UTC only for legacy direct inserts', async () => {
     const db = createBetterSqliteConnection();
-    await runMigrations(db);
+    await db.execAsync('CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at INTEGER NOT NULL,checksum TEXT);');
+    for (const migration of [migration001,migration002,migration003,migration004,migration005,migration006,migration007,migration008]) {
+      await migration.up(db);
+    }
     await db.runAsync("INSERT INTO accounts(id,name,type,initial_balance,currency,created_at,updated_at) VALUES('a','Cash','cash',0,'BDT',1,1);");
     await expect(db.runAsync("INSERT INTO transactions(id,account_id,category_id,amount,type,timestamp,occurred_on,created_at,updated_at) VALUES('bad','a','cat_exp_food_groceries',1,'expense',1,'2025-02-29',1,1);")).rejects.toThrow(/INVALID_CIVIL_DATE/);
     await db.runAsync("INSERT INTO transactions(id,account_id,category_id,amount,type,timestamp,created_at,updated_at) VALUES('legacy','a','cat_exp_food_groceries',1,'expense',1000,1,1);");

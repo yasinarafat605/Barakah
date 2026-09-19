@@ -13,6 +13,7 @@ import type {
 import { assertCivilDate, localCivilDateFromTimestamp } from '../domain/civil-date';
 import { deriveFundingShortfall, deriveGoalProgress } from '../domain/savings-goal';
 import { FinancialIntegrityError, toFinancialBigInt, toSafeFinancialNumber } from '../domain/integer-math';
+import { isSupportedCurrency } from '../domain/money';
 
 function makeId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
@@ -20,7 +21,7 @@ function makeId(prefix: string): string {
 
 function normalizeCurrency(value: string): string {
   const currency = value.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(currency)) throw new Error('GOAL_ERR_INVALID_CURRENCY');
+  if (!isSupportedCurrency(currency)) throw new Error('GOAL_ERR_INVALID_CURRENCY');
   return currency;
 }
 
@@ -29,6 +30,17 @@ async function loadGoalEntries(db: DatabaseConnection, goalId: string, includeDe
     `SELECT * FROM savings_goal_entries WHERE goal_id = ? ${includeDeleted ? '' : 'AND deleted_at IS NULL'} ORDER BY occurred_at,created_at,id;`,
     goalId
   );
+}
+
+export async function getSavingsGoalEntries(
+  goalId: string,
+  includeDeleted = false,
+  customDb?: DatabaseConnection
+): Promise<SavingsGoalEntryRow[]> {
+  const db = customDb ?? (await getDatabase());
+  const goal = await db.getFirstAsync<{ id: string }>('SELECT id FROM savings_goals WHERE id=?;', goalId);
+  if (!goal) throw new Error('GOAL_ERR_NOT_FOUND');
+  return loadGoalEntries(db, goalId, includeDeleted);
 }
 
 async function refreshLifecycle(db: DatabaseConnection, goalId: string, now: number): Promise<void> {
@@ -112,6 +124,7 @@ async function insertEntry(
   }
   const now = Date.now();
   const occurredAt = input.occurredAt ?? now;
+  if (!Number.isSafeInteger(occurredAt) || occurredAt <= 0) throw new Error('GOAL_ERR_UNSAFE_TIMESTAMP');
   const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(occurredAt);
   assertCivilDate(occurredOn, 'occurredOn');
   const entry: SavingsGoalEntryRow = {
@@ -270,6 +283,8 @@ export async function softDeleteGoalEntry(entryId: string, customDb?: DatabaseCo
   await runExclusiveTransaction(db, async (txn) => {
     const entry = await txn.getFirstAsync<SavingsGoalEntryRow>('SELECT * FROM savings_goal_entries WHERE id=? AND deleted_at IS NULL;', entryId);
     if (!entry) throw new Error('GOAL_ERR_ENTRY_NOT_FOUND');
+    const parent = await txn.getFirstAsync<SavingsGoalRow>('SELECT * FROM savings_goals WHERE id=? AND deleted_at IS NULL;', entry.goal_id);
+    if (!parent || parent.archived_at !== null) throw new Error('GOAL_ERR_UNAVAILABLE');
     const now = Date.now();
     if (entry.link_mode === 'owned_transfer' && entry.transaction_id) {
       const leg = await txn.getFirstAsync<TransactionRow>('SELECT * FROM transactions WHERE id=?;', entry.transaction_id);

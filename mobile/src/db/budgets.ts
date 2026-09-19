@@ -9,6 +9,7 @@ import type {
 import { assertCivilDate } from '../domain/civil-date';
 import { calculateBudgetAmounts, calculateUnallocated, calculateUnspentRollover } from '../domain/budget';
 import { FinancialIntegrityError, toFinancialBigInt, toSafeFinancialNumber } from '../domain/integer-math';
+import { isSupportedCurrency } from '../domain/money';
 
 const DEBT_EXPENSE_CATEGORIES = new Set(['cat_exp_loan_given', 'cat_exp_loan_repayment']);
 const DEBT_INCOME_CATEGORIES = new Set(['cat_inc_loan_received', 'cat_inc_loan_repayment_received']);
@@ -19,7 +20,7 @@ function id(prefix: string): string {
 
 function normalizeCurrency(currency: string): string {
   const value = currency.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(value)) throw new Error('BUDGET_ERR_INVALID_CURRENCY');
+  if (!isSupportedCurrency(value)) throw new Error('BUDGET_ERR_INVALID_CURRENCY');
   return value;
 }
 
@@ -93,6 +94,38 @@ async function validateRollover(
       ? await db.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id = ?;', cursor.rollover_from_budget_id)
       : null;
   }
+}
+
+async function hasQualifyingActivity(db: DatabaseConnection, budget: BudgetRow): Promise<boolean> {
+  const row = await db.getFirstAsync<{ id: string }>(
+    `SELECT t.id
+     FROM transactions t
+     JOIN accounts a ON a.id = t.account_id
+     WHERE t.deleted_at IS NULL
+       AND t.type IN ('income','expense')
+       AND t.occurred_on BETWEEN ? AND ?
+       AND a.currency = ?
+       AND (? IS NULL OR t.account_id = ?)
+     LIMIT 1;`,
+    budget.starts_on, budget.ends_on, budget.currency, budget.account_id, budget.account_id
+  );
+  return Boolean(row);
+}
+
+function assertBudgetMutable(budget: BudgetRow): void {
+  if (budget.deleted_at !== null) throw new Error('BUDGET_ERR_DELETED');
+  if (budget.archived_at !== null) throw new Error('BUDGET_ERR_ARCHIVED');
+}
+
+async function assertBudgetMeaningful(db: DatabaseConnection, budget: BudgetRow, excludingCategoryId?: string): Promise<void> {
+  if (budget.income_target !== null || budget.expense_limit !== null) return;
+  const other = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM budget_categories
+     WHERE budget_id=? AND deleted_at IS NULL ${excludingCategoryId ? 'AND id<>?' : ''}
+     LIMIT 1;`,
+    ...(excludingCategoryId ? [budget.id, excludingCategoryId] : [budget.id])
+  );
+  if (!other) throw new Error('BUDGET_ERR_TARGET_REQUIRED');
 }
 
 async function insertBudget(
@@ -183,16 +216,18 @@ export async function getBudgets(
   );
 }
 
-interface ActualRow {
+export interface BudgetActualRow {
   id: string;
   type: 'income' | 'expense';
   amount: number;
   category_id: string;
   debt_role: string | null;
   debt_direction: string | null;
+  occurred_on: string;
+  note: string | null;
 }
 
-function assertDebtMetadata(row: ActualRow): void {
+function assertDebtMetadata(row: BudgetActualRow): void {
   const expected: Record<string, [string, string]> = {
     cat_exp_loan_given: ['disbursement', 'lent'],
     cat_exp_loan_repayment: ['repayment', 'borrowed'],
@@ -217,6 +252,7 @@ export interface BudgetPerformance {
   overspent: number;
   unallocated: number | null;
   progressBp: number | null;
+  transactions: BudgetActualRow[];
 }
 
 export async function getBudgetPerformance(
@@ -230,8 +266,8 @@ export async function getBudgetPerformance(
   if (visited.has(budget.id)) throw new FinancialIntegrityError('Budget rollover cycle detected.');
   visited.add(budget.id);
   const categories = await getBudgetCategories(budget.id, db);
-  const rows = await db.getAllAsync<ActualRow>(
-    `SELECT t.id,t.type,t.amount,t.category_id,dt.role AS debt_role,d.direction AS debt_direction
+  const rows = await db.getAllAsync<BudgetActualRow>(
+    `SELECT t.id,t.type,t.amount,t.category_id,t.occurred_on,t.note,dt.role AS debt_role,d.direction AS debt_direction
      FROM transactions t
      JOIN accounts a ON a.id=t.account_id
      LEFT JOIN debt_transactions dt ON dt.transaction_id=t.id AND dt.deleted_at IS NULL
@@ -287,12 +323,20 @@ export async function getBudgetPerformance(
     overspent: amounts?.overspent ?? 0,
     unallocated: budget.expense_limit === null ? null : calculateUnallocated(budget.expense_limit, categories.map((item) => item.amount)),
     progressBp: amounts?.progressBp ?? null,
+    transactions: rows,
   };
 }
 
 export async function archiveBudget(budgetId: string, customDb?: DatabaseConnection): Promise<void> {
   const db = customDb ?? (await getDatabase());
-  await db.runAsync('UPDATE budgets SET archived_at=?,updated_at=? WHERE id=? AND archived_at IS NULL AND deleted_at IS NULL;', Date.now(), Date.now(), budgetId);
+  await runExclusiveTransaction(db, async (txn) => {
+    const budget = await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=?;', budgetId);
+    if (!budget || budget.deleted_at !== null) throw new Error('BUDGET_ERR_NOT_FOUND');
+    if (budget.archived_at !== null) return;
+    await assertBudgetMeaningful(txn, budget);
+    const now = Date.now();
+    await txn.runAsync('UPDATE budgets SET archived_at=?,updated_at=? WHERE id=?;', now, now, budgetId);
+  });
 }
 
 export async function restoreArchivedBudget(budgetId: string, customDb?: DatabaseConnection): Promise<void> {
@@ -300,6 +344,16 @@ export async function restoreArchivedBudget(budgetId: string, customDb?: Databas
   await runExclusiveTransaction(db, async (txn) => {
     const budget = await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=? AND deleted_at IS NULL;', budgetId);
     if (!budget) throw new Error('BUDGET_ERR_NOT_FOUND');
+    if (budget.archived_at === null) return;
+    if (budget.account_id) {
+      const account = await txn.getFirstAsync<{ currency: string; archived_at: number | null }>('SELECT currency,archived_at FROM accounts WHERE id=?;', budget.account_id);
+      if (!account || account.archived_at !== null) throw new Error('BUDGET_ERR_ACCOUNT_UNAVAILABLE');
+      if (account.currency !== budget.currency) throw new Error('BUDGET_ERR_CURRENCY_MISMATCH');
+    }
+    await assertBudgetMeaningful(txn, budget);
+    const categories = await getBudgetCategories(budget.id, txn);
+    await validateCategories(txn, categories.map((item) => ({ categoryId: item.category_id, amountMinor: item.amount, sortOrder: item.sort_order })), budget.expense_limit);
+    await validateRollover(txn, budget.rollover_from_budget_id, { id: budget.id, startsOn: budget.starts_on, currency: budget.currency, accountId: budget.account_id });
     await assertNoOverlap(txn, { startsOn: budget.starts_on, endsOn: budget.ends_on, currency: budget.currency, accountId: budget.account_id }, budget.id);
     await txn.runAsync('UPDATE budgets SET archived_at=NULL,updated_at=? WHERE id=?;', Date.now(), budget.id);
   });
@@ -307,8 +361,14 @@ export async function restoreArchivedBudget(budgetId: string, customDb?: Databas
 
 export async function softDeleteBudget(budgetId: string, customDb?: DatabaseConnection): Promise<void> {
   const db = customDb ?? (await getDatabase());
-  const now = Date.now();
-  await db.runAsync('UPDATE budgets SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL;', now, now, budgetId);
+  await runExclusiveTransaction(db, async (txn) => {
+    const budget = await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=?;', budgetId);
+    if (!budget || budget.deleted_at !== null) throw new Error('BUDGET_ERR_NOT_FOUND');
+    if (budget.archived_at === null) throw new Error('BUDGET_ERR_ARCHIVE_BEFORE_DELETE');
+    if (await hasQualifyingActivity(txn, budget)) throw new Error('BUDGET_ERR_ACTIVITY_LOCKED');
+    const now = Date.now();
+    await txn.runAsync('UPDATE budgets SET deleted_at=?,updated_at=? WHERE id=?;', now, now, budgetId);
+  });
 }
 
 export async function duplicateBudget(
@@ -343,12 +403,16 @@ export async function updateBudget(
 ): Promise<BudgetRow> {
   const db = customDb ?? (await getDatabase());
   await runExclusiveTransaction(db, async (txn) => {
-    const existing = await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=? AND deleted_at IS NULL;', budgetId);
+    const existing = await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=?;', budgetId);
     if (!existing) throw new Error('BUDGET_ERR_NOT_FOUND');
+    assertBudgetMutable(existing);
     assertCivilDate(input.startsOn, 'startsOn'); assertCivilDate(input.endsOn, 'endsOn');
     if (input.endsOn < input.startsOn) throw new Error('BUDGET_ERR_INVALID_PERIOD');
     if (input.periodType !== 'monthly' && input.periodType !== 'custom') throw new Error('BUDGET_ERR_INVALID_PERIOD_TYPE');
     const currency=normalizeCurrency(input.currency); const accountId=input.accountId??null;
+    if (await hasQualifyingActivity(txn, existing) && (input.startsOn !== existing.starts_on || input.endsOn !== existing.ends_on || currency !== existing.currency || accountId !== existing.account_id)) {
+      throw new Error('BUDGET_ERR_ACTIVITY_LOCKED_DUPLICATE_AND_ARCHIVE');
+    }
     const incomeTarget=input.incomeTargetMinor??null; const expenseLimit=input.expenseLimitMinor??null;
     const categories=input.categories??[];
     assertPositiveOptional(incomeTarget,'income target'); assertPositiveOptional(expenseLimit,'expense limit');
@@ -383,16 +447,26 @@ export async function updateBudget(
 }
 
 export async function softDeleteBudgetCategory(idValue:string,customDb?:DatabaseConnection):Promise<void>{
-  const db=customDb??(await getDatabase());const now=Date.now();
-  await db.runAsync('UPDATE budget_categories SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL;',now,now,idValue);
+  const db=customDb??(await getDatabase());
+  await runExclusiveTransaction(db,async(txn)=>{
+    const row=await txn.getFirstAsync<BudgetCategoryRow>('SELECT * FROM budget_categories WHERE id=? AND deleted_at IS NULL;',idValue);
+    if(!row)throw new Error('BUDGET_ERR_CATEGORY_NOT_FOUND');
+    const budget=await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=?;',row.budget_id);
+    if(!budget)throw new Error('BUDGET_ERR_NOT_FOUND');
+    assertBudgetMutable(budget);
+    await assertBudgetMeaningful(txn,budget,row.id);
+    const now=Date.now();
+    await txn.runAsync('UPDATE budget_categories SET deleted_at=?,updated_at=? WHERE id=?;',now,now,row.id);
+    await txn.runAsync('UPDATE budgets SET updated_at=? WHERE id=?;',now,budget.id);
+  });
 }
 
 export async function restoreBudgetCategory(idValue:string,customDb?:DatabaseConnection):Promise<void>{
   const db=customDb??(await getDatabase());
-  await runExclusiveTransaction(db,async(txn)=>{const row=await txn.getFirstAsync<BudgetCategoryRow>('SELECT * FROM budget_categories WHERE id=? AND deleted_at IS NOT NULL;',idValue);if(!row)throw new Error('BUDGET_ERR_CATEGORY_NOT_FOUND');const budget=await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=? AND deleted_at IS NULL;',row.budget_id);if(!budget)throw new Error('BUDGET_ERR_NOT_FOUND');const active=await getBudgetCategories(budget.id,txn);if(active.some(item=>item.category_id===row.category_id))throw new Error('BUDGET_ERR_DUPLICATE_CATEGORY');await validateCategories(txn,[...active.map(item=>({categoryId:item.category_id,amountMinor:item.amount,sortOrder:item.sort_order})),{categoryId:row.category_id,amountMinor:row.amount,sortOrder:row.sort_order}],budget.expense_limit);const now=Date.now();await txn.runAsync('UPDATE budget_categories SET deleted_at=NULL,updated_at=? WHERE id=?;',now,row.id);});
+  await runExclusiveTransaction(db,async(txn)=>{const row=await txn.getFirstAsync<BudgetCategoryRow>('SELECT * FROM budget_categories WHERE id=? AND deleted_at IS NOT NULL;',idValue);if(!row)throw new Error('BUDGET_ERR_CATEGORY_NOT_FOUND');const budget=await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=?;',row.budget_id);if(!budget)throw new Error('BUDGET_ERR_NOT_FOUND');assertBudgetMutable(budget);const active=await getBudgetCategories(budget.id,txn);if(active.some(item=>item.category_id===row.category_id))throw new Error('BUDGET_ERR_DUPLICATE_CATEGORY');await validateCategories(txn,[...active.map(item=>({categoryId:item.category_id,amountMinor:item.amount,sortOrder:item.sort_order})),{categoryId:row.category_id,amountMinor:row.amount,sortOrder:row.sort_order}],budget.expense_limit);const now=Date.now();await txn.runAsync('UPDATE budget_categories SET deleted_at=NULL,updated_at=? WHERE id=?;',now,row.id);await txn.runAsync('UPDATE budgets SET updated_at=? WHERE id=?;',now,budget.id);});
 }
 
 export async function reorderBudgetCategories(budgetId:string,orderedIds:string[],customDb?:DatabaseConnection):Promise<void>{
   const db=customDb??(await getDatabase());
-  await runExclusiveTransaction(db,async(txn)=>{const active=await getBudgetCategories(budgetId,txn);if(active.length!==orderedIds.length||new Set(orderedIds).size!==orderedIds.length||orderedIds.some(value=>!active.some(item=>item.id===value)))throw new Error('BUDGET_ERR_INVALID_REORDER');const now=Date.now();for(const [index,value] of orderedIds.entries())await txn.runAsync('UPDATE budget_categories SET sort_order=?,updated_at=? WHERE id=?;',index,now,value);});
+  await runExclusiveTransaction(db,async(txn)=>{const budget=await txn.getFirstAsync<BudgetRow>('SELECT * FROM budgets WHERE id=?;',budgetId);if(!budget)throw new Error('BUDGET_ERR_NOT_FOUND');assertBudgetMutable(budget);const active=await getBudgetCategories(budgetId,txn);if(active.length!==orderedIds.length||new Set(orderedIds).size!==orderedIds.length||orderedIds.some(value=>!active.some(item=>item.id===value)))throw new Error('BUDGET_ERR_INVALID_REORDER');const now=Date.now();for(const [index,value] of orderedIds.entries())await txn.runAsync('UPDATE budget_categories SET sort_order=?,updated_at=? WHERE id=?;',index,now,value);await txn.runAsync('UPDATE budgets SET updated_at=? WHERE id=?;',now,budgetId);});
 }

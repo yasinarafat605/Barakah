@@ -12,11 +12,11 @@ describe('Migration 006: Backup Integrity Hardening and Checksums Enforcement', 
     const db = createBetterSqliteConnection();
     const result = await runMigrations(db);
 
-    expect(result.applied).toBe(8);
-    expect(result.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(result.applied).toBe(9);
+    expect(result.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
     const applied = await getAppliedMigrations(db);
-    expect(applied).toHaveLength(8);
+    expect(applied).toHaveLength(9);
 
     for (const r of applied) {
       expect(r.checksum).toBe(CANONICAL_MIGRATION_CHECKSUMS[r.version]);
@@ -69,8 +69,8 @@ describe('Migration 006: Backup Integrity Hardening and Checksums Enforcement', 
 
     // 2. Run runner to apply Migrations 006, 007 and 008
     const result = await runMigrations(db);
-    expect(result.applied).toBe(3);
-    expect(result.versions).toEqual([6, 7, 8]);
+    expect(result.applied).toBe(4);
+    expect(result.versions).toEqual([6, 7, 8, 9]);
 
     // 3. Verify pre-existing row preserved
     const existingHistory = await db.getFirstAsync<{ id: string; status: string }>(

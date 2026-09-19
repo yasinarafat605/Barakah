@@ -176,7 +176,7 @@ export function validateManifestStructure(manifest: unknown): BackupManifest {
   if (typeof m.schemaVersion !== 'number' || !Number.isSafeInteger(m.schemaVersion) || m.schemaVersion <= 0) {
     throw new RestoreError('RESTORE_ERR_INVALID_MANIFEST', 'Missing or invalid schemaVersion in manifest.');
   }
-  if ((m.schemaVersion <= 7 && m.manifestVersion !== 1) || (m.schemaVersion === 8 && m.manifestVersion !== 2)) {
+  if ((m.schemaVersion <= 7 && m.manifestVersion !== 1) || (m.schemaVersion >= 8 && m.manifestVersion !== 2)) {
     throw new RestoreError('RESTORE_ERR_UNSUPPORTED_VERSION', 'Manifest version does not match schema version.');
   }
   if (typeof m.appVersion !== 'number' || !Number.isSafeInteger(m.appVersion) || m.appVersion <= 0) {

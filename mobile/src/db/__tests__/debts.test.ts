@@ -42,6 +42,12 @@ describe('Debts & Repayments Repository (Phase 3)', () => {
   });
 
   describe('Debt Creation & Account Cash Integration', () => {
+    it('rejects unsafe debt amounts and timestamps before SQLite writes', async () => {
+      const cp = await createCounterparty({ name: 'Safe Integer Boundary' });
+      await expect(createDebt({counterpartyId:cp.id,direction:'borrowed',originalPrincipalMinor:Number.MAX_SAFE_INTEGER+1,currency:'BDT',openingMode:'existing_balance'})).rejects.toThrow(/positive safe integer/i);
+      await expect(createDebt({counterpartyId:cp.id,direction:'borrowed',originalPrincipalMinor:100,currency:'BDT',openingMode:'existing_balance',openedAt:Number.MAX_SAFE_INTEGER+1})).rejects.toThrow(/UNSAFE_TIMESTAMP/);
+    });
+
     it('creates a borrowed debt with cash disbursement and increases account balance', async () => {
       const cp = await createCounterparty({ name: 'Brother Farhan' });
       const acc = await createAccount({

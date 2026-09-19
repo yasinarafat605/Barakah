@@ -490,3 +490,11 @@ Migration 008 is the authoritative implemented model for the local planning foun
 - Savings allocations are signed `savings_goal_entries` using `allocation_only`, `existing_transfer`, or `owned_transfer` evidence modes.
 - The full unique index on non-null `savings_goal_entries.transaction_id` includes soft-deleted rows, so historical transfer evidence cannot be reassigned. Restore revives the original row.
 - Derived money aggregation and progress calculations use `BigInt` intermediates and fail outside JavaScript safe-integer boundaries.
+
+## Phase 5 integrity correction (Migration 009)
+
+- Existing planning and transaction civil dates are preflight-validated before trigger changes. Invalid data aborts and rolls back the migration.
+- `transactions.occurred_on` is mandatory for every new insert. Migration 008's UTC-derived insert default is historical compatibility behavior only.
+- Strict insert/update Gregorian triggers protect budget start/end dates, nullable goal target dates, and goal-entry dates.
+- Backup envelope format remains version 1. Schemas 8 and 9 use manifest v2; schema-8 restores upgrade through Migration 009 in staging.
+- The canonical checksum registry and frozen-source fixture cover SQL and executable TypeScript sources for Migrations 001–009.

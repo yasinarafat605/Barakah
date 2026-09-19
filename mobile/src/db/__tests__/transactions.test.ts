@@ -34,6 +34,14 @@ describe('Transactions & Paired Transfer Repository (Milestone 2)', () => {
   });
 
   describe('Income & Expense Operations', () => {
+    it('rejects unsafe transaction amounts and timestamps before SQLite', async () => {
+      const first = await createAccount({ name: 'First', type: 'cash', initialBalancePoisha: 0, currency: 'BDT' });
+      const second = await createAccount({ name: 'Second', type: 'cash', initialBalancePoisha: 0, currency: 'BDT' });
+      await expect(createIncomeTransaction({ accountId:first.id,categoryId:'cat_inc_salary_wages',amountMinor:Number.MAX_SAFE_INTEGER+1,occurredOn:'2026-01-01' })).rejects.toThrow(/safe integer/i);
+      await expect(createExpenseTransaction({ accountId:first.id,categoryId:'cat_exp_food_groceries',amountMinor:Number.MAX_SAFE_INTEGER+1,occurredOn:'2026-01-01' })).rejects.toThrow(/safe integer/i);
+      await expect(createTransfer({ sourceAccountId:first.id,destinationAccountId:second.id,amountMinor:Number.MAX_SAFE_INTEGER+1,occurredOn:'2026-01-01' })).rejects.toThrow(/safe integer/i);
+      await expect(createIncomeTransaction({ accountId:first.id,categoryId:'cat_inc_salary_wages',amountMinor:1,occurredAt:Number.MAX_SAFE_INTEGER+1,occurredOn:'2026-01-01' })).rejects.toThrow(/UNSAFE_TIMESTAMP/);
+    });
     it('creates an income transaction and increases derived account balance', async () => {
       const acc = await createAccount({
         name: 'Daily Checking',
@@ -412,4 +420,3 @@ describe('Transactions & Paired Transfer Repository (Milestone 2)', () => {
     });
   });
 });
-

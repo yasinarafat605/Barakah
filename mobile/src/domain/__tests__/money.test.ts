@@ -1,4 +1,4 @@
-import { Money, toBengaliNumerals } from '../money';
+import { formatMinorUnits, Money, toBengaliNumerals } from '../money';
 
 describe('Money Domain Value Object (ADR-004)', () => {
   describe('Float rejection upon instantiation', () => {
@@ -127,6 +127,11 @@ describe('Money Domain Value Object (ADR-004)', () => {
   });
 
   describe('Locale formatting for Bangla and English', () => {
+    it('renders integer-only Phase 5 financial displays in English and Bengali', () => {
+      expect(formatMinorUnits(9007199254740991, 'USD', 'en')).toBe('$90,071,992,547,409.91');
+      expect(formatMinorUnits(12345, 'BDT', 'bn')).toBe(`৳${toBengaliNumerals('123.45')}`);
+      expect(() => formatMinorUnits(Number.MAX_SAFE_INTEGER + 1, 'GBP')).toThrow('MONEY_ERR_UNSAFE_AMOUNT');
+    });
     it('formats 10050 poisha into ৳100.50 (English) and ৳১০০.৫০ (Bangla)', () => {
       const m = new Money(10050);
       expect(m.format('en')).toBe('৳100.50');

@@ -36,6 +36,7 @@ import {
 } from './types';
 import { isValidCivilDate } from '../../domain/civil-date';
 import { CANONICAL_MIGRATION_CHECKSUMS } from '../../db/migrations/registry';
+import { isSupportedCurrency } from '../../domain/money';
 
 // ID validator: non-empty string, reasonable length (1 to 128 characters)
 function isValidId(id: unknown): id is string {
@@ -57,9 +58,9 @@ function isSafeInteger(val: unknown): val is number {
   return typeof val === 'number' && Number.isSafeInteger(val);
 }
 
-// Currency code validator (3 uppercase letters, e.g. BDT, USD)
+// Currency validator: Barakah intentionally supports the declared two-decimal currency set only.
 function isValidCurrency(val: unknown): val is string {
-  return typeof val === 'string' && /^[A-Z]{3}$/.test(val);
+  return typeof val === 'string' && isSupportedCurrency(val);
 }
 
 // Safe timestamp validator
@@ -836,7 +837,7 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
   for (let i = 0; i < activeBudgets.length; i++) {
     for (let j = i + 1; j < activeBudgets.length; j++) {
       const a = activeBudgets[i]; const b = activeBudgets[j];
-      const sameScope = a.currency === b.currency && a.account_id === b.account_id;
+      const sameScope = a.currency === b.currency && (a.account_id === null || b.account_id === null || a.account_id === b.account_id);
       if (sameScope && a.starts_on <= b.ends_on && b.starts_on <= a.ends_on) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Active budgets ${a.id} and ${b.id} overlap.`);
     }
   }
@@ -858,9 +859,14 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
       allocatedByBudget.set(item.budget_id, (allocatedByBudget.get(item.budget_id) ?? 0n) + BigInt(item.amount));
     }
   }
-  for (const [budgetId, allocated] of allocatedByBudget) {
-    const limit = budgetsById.get(budgetId)?.expense_limit;
-    if (limit === null || limit === undefined || allocated > BigInt(limit)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budgetId} category plan exceeds its expense limit.`);
+  for (const budget of data.budgets) {
+    const allocated = allocatedByBudget.get(budget.id) ?? 0n;
+    if (budget.expense_limit !== null && allocated > BigInt(budget.expense_limit)) {
+      throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budget.id} category plan exceeds its expense limit.`);
+    }
+    if (budget.income_target === null && budget.expense_limit === null && allocated === 0n) {
+      throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Budget ${budget.id} has no meaningful target.`);
+    }
   }
 
   const goalsById = new Map<string, SavingsGoalRow>();
@@ -886,11 +892,24 @@ export function validatePayloadInvariants(data: BackupPayloadData): void {
       permanentlyLinkedTransactions.add(entry.transaction_id);
       const tx = transactionsById.get(entry.transaction_id);
       if (!tx) throw new RestoreError('RESTORE_ERR_FK_CHECK_FAILED', `Savings goal entry ${entry.id} references missing transaction.`);
-      if (!goal.linked_account_id || (tx.account_id !== goal.linked_account_id && tx.related_account_id !== goal.linked_account_id)) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence is outside the linked account.`);
-      if (tx.type !== 'transfer' || tx.amount !== entry.amount || tx.occurred_on !== entry.occurred_on) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence metadata disagrees.`);
       const expectedRole = entry.entry_type === 'contribution' ? 'destination' : 'source';
-      if (tx.transfer_role !== expectedRole) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence direction disagrees.`);
-      if (entry.deleted_at === null && tx.deleted_at !== null) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Active savings entry ${entry.id} references deleted evidence.`);
+      if (!goal.linked_account_id || tx.account_id !== goal.linked_account_id) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence is outside the linked account.`);
+      if (tx.type !== 'transfer' || tx.transfer_role !== expectedRole || tx.amount !== entry.amount || tx.timestamp !== entry.occurred_at || tx.occurred_on !== entry.occurred_on) {
+        throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} evidence metadata disagrees.`);
+      }
+      const pair = tx.transfer_id ? transfersByTransferId.get(tx.transfer_id) : undefined;
+      if (!pair || pair.length !== 2 || !pair.some((leg) => leg.id !== tx.id && leg.account_id === tx.related_account_id && leg.related_account_id === tx.account_id && leg.amount === tx.amount && leg.timestamp === tx.timestamp && leg.occurred_on === tx.occurred_on && leg.deleted_at === tx.deleted_at)) {
+        throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Savings goal entry ${entry.id} has invalid paired evidence.`);
+      }
+      const evidenceDeleted = tx.deleted_at !== null;
+      const cascadeDeleted = entry.cascade_deleted_at !== null;
+      if (entry.deleted_at === null && evidenceDeleted) throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Active savings entry ${entry.id} references deleted evidence.`);
+      if (entry.link_mode === 'owned_transfer' && ((entry.deleted_at !== null) !== evidenceDeleted || cascadeDeleted !== evidenceDeleted)) {
+        throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Owned savings transfer ${entry.id} deletion ownership disagrees.`);
+      }
+      if (entry.link_mode === 'existing_transfer' && (cascadeDeleted !== evidenceDeleted || (cascadeDeleted && entry.deleted_at === null))) {
+        throw new RestoreError('RESTORE_ERR_INVARIANT_FAILED', `Existing savings transfer ${entry.id} deletion state disagrees.`);
+      }
     }
     if (entry.deleted_at === null) {
       const signed = entry.entry_type === 'contribution' ? BigInt(entry.amount) : -BigInt(entry.amount);

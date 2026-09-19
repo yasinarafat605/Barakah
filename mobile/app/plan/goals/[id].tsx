@@ -1,48 +1,21 @@
-import React, { useCallback, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useTranslation } from 'react-i18next';
-import { getSavingsGoalProgress, recordGoalAllocation } from '@/src/db';
-import { parseMoneyInput } from '@/src/domain/money';
-
-type Progress = Awaited<ReturnType<typeof getSavingsGoalProgress>>;
-
-export default function GoalDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const { t } = useTranslation();
-  const [data, setData] = useState<Progress | null>(null);
-  const [amount, setAmount] = useState('');
-  const load = useCallback(() => { getSavingsGoalProgress(id).then(setData).catch((error) => Alert.alert(t('planning.goalUnavailable'), String(error))); }, [id, t]);
-  useFocusEffect(load);
-  if (!data) return <SafeAreaView style={styles.safe}><Text style={styles.body}>{t('status.loading')}</Text></SafeAreaView>;
-  const add = async (type: 'contribution' | 'withdrawal') => {
-    try {
-      const parsed = parseMoneyInput(amount);
-      if (!parsed.valid) throw new Error(parsed.error);
-      await recordGoalAllocation({ goalId: id, entryType: type, amountMinor: parsed.amountMinor });
-      setAmount('');
-      load();
-    } catch (error) {
-      Alert.alert(t('planning.allocationNotSaved'), error instanceof Error ? error.message : t('status.error'));
-    }
-  };
-  const shortfall = data.funding ? `${data.goal.currency} ${(data.funding.fundingShortfall / 100).toFixed(2)}` : '';
-  return <SafeAreaView style={styles.safe}>
-    <Stack.Screen options={{ title: data.goal.name }} />
-    <View style={styles.body}>
-      <Text style={styles.title}>{data.goal.name}</Text>
-      <Text>{data.goal.currency} {(data.current / 100).toFixed(2)} / {(data.goal.target_amount / 100).toFixed(2)}</Text>
-      <Text>{(data.progressBp / 100).toFixed(2)}% · {t(`planning.${data.lifecycleStatus}`)}</Text>
-      <Text style={styles.note}>{t('planning.earmarkNotice')}</Text>
-      {data.funding?.underfunded && <Text style={styles.warning}>{t('planning.underfundedBy', { amount: shortfall })}</Text>}
-      <TextInput accessibilityLabel={t('planning.amount')} style={styles.input} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder={t('planning.amount')} />
-      <View style={styles.row}>
-        <TouchableOpacity accessibilityRole="button" style={styles.button} onPress={() => add('contribution')}><Text style={styles.buttonText}>{t('planning.allocate')}</Text></TouchableOpacity>
-        <TouchableOpacity accessibilityRole="button" style={styles.secondary} onPress={() => add('withdrawal')}><Text>{t('planning.unallocate')}</Text></TouchableOpacity>
-      </View>
-    </View>
-  </SafeAreaView>;
-}
-
-const styles = StyleSheet.create({ safe: { flex: 1, backgroundColor: '#F6F8F7' }, body: { padding: 20, gap: 14 }, title: { fontSize: 24, fontWeight: '700' }, note: { color: '#5E6C65', lineHeight: 20 }, warning: { color: '#B5473A', fontWeight: '600' }, input: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#D7DEDA', borderRadius: 10, padding: 12 }, row: { flexDirection: 'row', gap: 10 }, button: { backgroundColor: '#087A62', padding: 14, borderRadius: 10 }, secondary: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#D7DEDA', padding: 14, borderRadius: 10 }, buttonText: { color: '#fff', fontWeight: '700' } });
+import React,{useCallback,useState} from 'react';
+import {Alert,ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
+import {SafeAreaView} from 'react-native-safe-area-context';
+import {Stack,useFocusEffect,useLocalSearchParams,useRouter} from 'expo-router';
+import {useTranslation} from 'react-i18next';
+import {archiveSavingsGoal,getAccountById,getSavingsGoalEntries,getSavingsGoalProgress,restoreArchivedSavingsGoal,restoreGoalEntry,softDeleteGoalEntry,softDeleteSavingsGoal} from '@/src/db';
+import type {AccountWithBalance,SavingsGoalEntryRow} from '@/src/db/types';
+import {formatBasisPoints,formatMinorUnits} from '@/src/domain/money'; import {planningErrorMessage} from '@/src/domain/planning-error';
+import {Colors} from '@/src/constants/theme'; import {useColorScheme} from '@/hooks/use-color-scheme';
+type Progress=Awaited<ReturnType<typeof getSavingsGoalProgress>>;
+export default function GoalDetail(){const {id}=useLocalSearchParams<{id:string}>();const router=useRouter();const {t,i18n}=useTranslation();const theme=Colors[useColorScheme()??'light'];const locale=i18n.language.startsWith('bn')?'bn':'en';const [data,setData]=useState<Progress|null>(null);const [entries,setEntries]=useState<SavingsGoalEntryRow[]>([]);const [account,setAccount]=useState<AccountWithBalance|null>(null);const [error,setError]=useState<string|null>(null);
+ const load=useCallback(()=>{setError(null);getSavingsGoalProgress(id).then(async p=>{setData(p);setEntries(await getSavingsGoalEntries(id,true));setAccount(p.goal.linked_account_id?await getAccountById(p.goal.linked_account_id):null);}).catch(e=>setError(planningErrorMessage(e,t)));},[id,t]);useFocusEffect(load);
+ const action=async(fn:()=>Promise<void>)=>{try{await fn();load();}catch(e){Alert.alert(t('status.error'),planningErrorMessage(e,t));}};if(error)return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Text style={[styles.body,{color:theme.error}]}>{error}</Text></SafeAreaView>;if(!data)return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Text style={[styles.body,{color:theme.text}]}>{t('status.loading')}</Text></SafeAreaView>;
+ const m=(v:number)=>formatMinorUnits(v,data.goal.currency,locale);const fields:[string,string][]=[[t('planning.target'),m(data.goal.target_amount)],[t('planning.allocated'),m(data.contributed)],[t('planning.withdrawn'),m(data.withdrawn)],[t('planning.currentAllocation'),m(data.current)],[t('planning.remaining'),m(data.remaining)],[t('planning.surplus'),m(data.surplus)],[t('planning.fundingShortfall'),m(data.funding?.fundingShortfall??0)],[t('planning.lifecycle'),t(`planning.${data.lifecycleStatus}`)],[t('planning.targetDate'),data.goal.target_date??'—'],[t('planning.linkedAccount'),account?.name??t('planning.noLinkedAccount')]];
+ return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Stack.Screen options={{title:data.goal.name}}/><ScrollView contentContainerStyle={styles.body}><Text style={[styles.title,{color:theme.text}]}>{data.goal.name}</Text><Text style={{color:theme.textMuted}}>{formatBasisPoints(data.progressBp,locale)}</Text><Text style={{color:theme.textMuted}}>{data.goal.note}</Text><View style={[styles.card,{backgroundColor:theme.surface,borderColor:theme.border}]}>{fields.map(([k,v])=><Text key={k} accessibilityLabel={`${k}: ${v}`} style={{color:theme.text}}>{k}: {v}</Text>)}</View>
+ <View style={styles.row}><TouchableOpacity accessibilityRole="button" style={[styles.primary,{backgroundColor:theme.primary}]} onPress={()=>router.push(`/plan/goals/${id}/entry` as never)}><Text style={styles.white}>{t('planning.addEntry')}</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" style={[styles.secondary,{borderColor:theme.border}]} onPress={()=>router.push({pathname:'/plan/goals/new',params:{editId:id}} as never)}><Text style={{color:theme.text}}>{t('planning.editGoal')}</Text></TouchableOpacity></View>
+ <Text style={[styles.section,{color:theme.text}]}>{t('planning.timeline')}</Text>{entries.length===0?<Text style={{color:theme.textMuted}}>{t('planning.noEntries')}</Text>:entries.map(e=><View key={e.id} style={[styles.card,{backgroundColor:theme.surface,borderColor:theme.border}]}><Text style={{color:theme.text}}>{e.occurred_on} · {t(`planning.${e.entry_type}`)} · {m(e.amount)}</Text><Text style={{color:theme.textMuted}}>{t(`planning.${e.link_mode==='allocation_only'?'allocationOnly':e.link_mode==='existing_transfer'?'existingTransfer':'ownedTransfer'}`)}{e.note?` · ${e.note}`:''}</Text><TouchableOpacity accessibilityRole="button" style={styles.link} onPress={()=>action(()=>e.deleted_at?restoreGoalEntry(e.id):softDeleteGoalEntry(e.id))}><Text style={{color:e.deleted_at?theme.primary:theme.error}}>{t(e.deleted_at?'planning.restoreEntry':'planning.deleteEntry')}</Text></TouchableOpacity></View>)}
+ {data.goal.archived_at?<TouchableOpacity style={[styles.primary,{backgroundColor:theme.primary}]} onPress={()=>action(()=>restoreArchivedSavingsGoal(id))}><Text style={styles.white}>{t('planning.restoreGoal')}</Text></TouchableOpacity>:<TouchableOpacity style={[styles.secondary,{borderColor:theme.border}]} onPress={()=>Alert.alert(t('planning.archiveGoal'),t('planning.earmarkNotice'),[{text:t('actions.cancel'),style:'cancel'},{text:t('planning.keepAllocated'),onPress:()=>action(()=>archiveSavingsGoal(id,'keep_allocated'))},{text:t('planning.archiveUnallocate'),onPress:()=>action(()=>archiveSavingsGoal(id,'unallocate'))}])}><Text style={{color:theme.text}}>{t('planning.archiveGoal')}</Text></TouchableOpacity>}
+ <TouchableOpacity style={[styles.secondary,{borderColor:theme.error}]} onPress={()=>action(async()=>{await softDeleteSavingsGoal(id);router.back();})}><Text style={{color:theme.error}}>{t('planning.deleteGoal')}</Text></TouchableOpacity>
+ </ScrollView></SafeAreaView>}
+const styles=StyleSheet.create({safe:{flex:1},body:{padding:20,gap:12},title:{fontSize:24,fontWeight:'700'},section:{fontSize:19,fontWeight:'700',marginTop:8},card:{padding:15,borderRadius:12,borderWidth:1,gap:7},row:{flexDirection:'row',gap:10},primary:{minHeight:48,padding:13,borderRadius:10,alignItems:'center',justifyContent:'center',flex:1},secondary:{minHeight:48,padding:13,borderRadius:10,borderWidth:1,alignItems:'center',justifyContent:'center',flex:1},white:{color:'#fff',fontWeight:'700'},link:{minHeight:48,justifyContent:'center'}});

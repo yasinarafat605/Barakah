@@ -1,57 +1,8 @@
-import React, { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useTranslation } from 'react-i18next';
-import { archiveBudget, duplicateBudget, getBudgetPerformance } from '@/src/db';
-import type { BudgetPerformance } from '@/src/db/budgets';
-
-function nextPeriod(periodType: 'monthly' | 'custom', startsOn: string, endsOn: string): { startsOn: string; endsOn: string } {
-  const day = 86_400_000;
-  const start = Date.parse(`${startsOn}T00:00:00Z`);
-  const end = Date.parse(`${endsOn}T00:00:00Z`);
-  const nextStart = end + day;
-  const nextStartDate = new Date(nextStart);
-  const nextEnd = periodType === 'monthly'
-    ? Date.UTC(nextStartDate.getUTCFullYear(), nextStartDate.getUTCMonth() + 1, 0)
-    : nextStart + (end - start);
-  return { startsOn: new Date(nextStart).toISOString().slice(0, 10), endsOn: new Date(nextEnd).toISOString().slice(0, 10) };
-}
-
-export default function BudgetDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
-  const { t } = useTranslation();
-  const [data, setData] = useState<BudgetPerformance | null>(null);
-  const load = useCallback(() => { getBudgetPerformance(id).then(setData).catch((error) => Alert.alert(t('planning.budgetUnavailable'), String(error))); }, [id, t]);
-  useFocusEffect(load);
-  if (!data) return <SafeAreaView style={styles.safe}><Text style={styles.body}>{t('status.loading')}</Text></SafeAreaView>;
-  const money = (value: number | null) => value === null ? '—' : `${data.budget.currency} ${(value / 100).toFixed(2)}`;
-  const duplicate = async () => {
-    try {
-      const created = await duplicateBudget(id, nextPeriod(data.budget.period_type, data.budget.starts_on, data.budget.ends_on));
-      router.replace(`/plan/budgets/${created.id}` as never);
-    } catch (error) {
-      Alert.alert(t('planning.duplicateFailed'), error instanceof Error ? error.message : t('status.error'));
-    }
-  };
-  return <SafeAreaView style={styles.safe}>
-    <Stack.Screen options={{ title: data.budget.name || t('planning.budget') }} />
-    <ScrollView contentContainerStyle={styles.body}>
-      <Text style={styles.title}>{data.budget.name || t('planning.budget')}</Text>
-      <Text>{data.budget.starts_on} – {data.budget.ends_on}</Text>
-      <View style={styles.card}>
-        <Text>{t('planning.effectiveLimit')}: {money(data.effectiveExpenseLimit)}</Text>
-        <Text>{t('planning.actual')}: {money(data.overallActual)}</Text>
-        <Text>{t('planning.remaining')}: {money(data.remaining)}</Text>
-        <Text>{t('planning.unallocatedPlan')}: {money(data.unallocated)}</Text>
-        <Text>{t('planning.incomeActual')}: {money(data.incomeActual)}</Text>
-      </View>
-      {data.categories.map((category) => <View key={category.id} style={styles.card}><Text>{category.category_id}</Text><Text>{money(category.actual)} / {money(category.amount)}</Text></View>)}
-      <TouchableOpacity accessibilityRole="button" style={styles.primaryButton} onPress={duplicate}><Text style={styles.buttonText}>{t('planning.duplicateNextPeriod')}</Text></TouchableOpacity>
-      <TouchableOpacity accessibilityRole="button" style={styles.button} onPress={() => archiveBudget(id).then(() => router.back())}><Text style={styles.buttonText}>{t('planning.archiveBudget')}</Text></TouchableOpacity>
-    </ScrollView>
-  </SafeAreaView>;
-}
-
-const styles = StyleSheet.create({ safe: { flex: 1, backgroundColor: '#F6F8F7' }, body: { padding: 20, gap: 12 }, title: { fontSize: 24, fontWeight: '700' }, card: { backgroundColor: '#fff', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#D7DEDA', gap: 7 }, primaryButton: { padding: 14, borderRadius: 10, backgroundColor: '#087A62', alignItems: 'center' }, button: { padding: 14, borderRadius: 10, backgroundColor: '#58665F', alignItems: 'center' }, buttonText: { color: '#fff', fontWeight: '700' } });
+import React,{useCallback,useState} from 'react'; import {Alert,ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native'; import {SafeAreaView} from 'react-native-safe-area-context'; import {Stack,useFocusEffect,useLocalSearchParams,useRouter} from 'expo-router'; import {useTranslation} from 'react-i18next';
+import {archiveBudget,duplicateBudget,getBudgetPerformance,restoreArchivedBudget,softDeleteBudget} from '@/src/db'; import type {BudgetPerformance} from '@/src/db/budgets'; import {formatMinorUnits} from '@/src/domain/money'; import {planningErrorMessage} from '@/src/domain/planning-error'; import {Colors} from '@/src/constants/theme'; import {useColorScheme} from '@/hooks/use-color-scheme';
+function nextPeriod(type:'monthly'|'custom',starts:string,ends:string){const day=86400000,start=Date.parse(`${starts}T00:00:00Z`),end=Date.parse(`${ends}T00:00:00Z`),next=end+day,d=new Date(next),last=type==='monthly'?Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,0):next+(end-start);return{startsOn:new Date(next).toISOString().slice(0,10),endsOn:new Date(last).toISOString().slice(0,10)};}
+export default function BudgetDetail(){const {id}=useLocalSearchParams<{id:string}>(),router=useRouter(),{t,i18n}=useTranslation(),theme=Colors[useColorScheme()??'light'],locale=i18n.language.startsWith('bn')?'bn':'en';const [data,setData]=useState<BudgetPerformance|null>(null),[error,setError]=useState<string|null>(null);const load=useCallback(()=>{setError(null);getBudgetPerformance(id).then(setData).catch(e=>setError(planningErrorMessage(e,t)));},[id,t]);useFocusEffect(load);const act=async(fn:()=>Promise<void>)=>{try{await fn();load();}catch(e){Alert.alert(t('status.error'),planningErrorMessage(e,t));}};if(error)return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Text style={[styles.body,{color:theme.error}]}>{error}</Text></SafeAreaView>;if(!data)return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Text style={[styles.body,{color:theme.text}]}>{t('status.loading')}</Text></SafeAreaView>;const m=(v:number|null)=>v===null?'—':formatMinorUnits(v,data.budget.currency,locale);const duplicate=async()=>{try{const b=await duplicateBudget(id,nextPeriod(data.budget.period_type,data.budget.starts_on,data.budget.ends_on));router.replace(`/plan/budgets/${b.id}` as never);}catch(e){Alert.alert(t('planning.duplicateFailed'),planningErrorMessage(e,t));}};
+ return <SafeAreaView style={[styles.safe,{backgroundColor:theme.background}]}><Stack.Screen options={{title:data.budget.name||t('planning.budget')}}/><ScrollView contentContainerStyle={styles.body}><Text style={[styles.title,{color:theme.text}]}>{data.budget.name||t('planning.budget')}</Text><Text style={{color:theme.textMuted}}>{data.budget.starts_on} – {data.budget.ends_on} · {data.budget.currency} · {t(data.budget.account_id?'planning.accountBudget':'planning.overallBudget')}</Text><View style={[styles.card,{backgroundColor:theme.surface,borderColor:theme.border}]}>{[[t('planning.effectiveLimit'),m(data.effectiveExpenseLimit)],[t('planning.actual'),m(data.overallActual)],[t('planning.remaining'),m(data.remaining)],[t('planning.unallocatedPlan'),m(data.unallocated)],[t('planning.incomeActual'),m(data.incomeActual)]].map(([k,v])=><Text key={k} accessibilityLabel={`${k}: ${v}`} style={{color:theme.text}}>{k}: {v}</Text>)}</View>
+ {data.categories.map(c=><View key={c.id} style={[styles.card,{backgroundColor:theme.surface,borderColor:theme.border}]}><Text style={{color:theme.text}}>{c.category_id}</Text><Text style={{color:theme.textMuted}}>{m(c.actual)} / {m(c.amount)} · {t('planning.remaining')}: {m(c.remaining)}</Text></View>)}<Text style={[styles.section,{color:theme.text}]}>{t('planning.budgetTransactions')}</Text>{data.transactions.length===0?<Text style={{color:theme.textMuted}}>{t('planning.noBudgetTransactions')}</Text>:data.transactions.map(tx=><View key={tx.id} style={[styles.card,{backgroundColor:theme.surface,borderColor:theme.border}]}><Text style={{color:theme.text}}>{tx.occurred_on} · {m(tx.amount)}</Text><Text style={{color:theme.textMuted}}>{tx.note||tx.category_id||tx.type}</Text></View>)}
+ <View style={styles.row}><TouchableOpacity style={[styles.primary,{backgroundColor:theme.primary}]} onPress={()=>router.push({pathname:'/plan/budgets/new',params:{editId:id}} as never)}><Text style={styles.white}>{t('planning.editBudget')}</Text></TouchableOpacity><TouchableOpacity style={[styles.secondary,{borderColor:theme.border}]} onPress={duplicate}><Text style={{color:theme.text}}>{t('planning.duplicateNextPeriod')}</Text></TouchableOpacity></View>{data.budget.archived_at?<TouchableOpacity style={[styles.primary,{backgroundColor:theme.primary}]} onPress={()=>act(()=>restoreArchivedBudget(id))}><Text style={styles.white}>{t('planning.restoreBudget')}</Text></TouchableOpacity>:<TouchableOpacity style={[styles.secondary,{borderColor:theme.border}]} onPress={()=>act(()=>archiveBudget(id))}><Text style={{color:theme.text}}>{t('planning.archiveBudget')}</Text></TouchableOpacity>}<TouchableOpacity style={[styles.secondary,{borderColor:theme.error}]} onPress={()=>act(async()=>{await softDeleteBudget(id);router.back();})}><Text style={{color:theme.error}}>{t('planning.deleteBudget')}</Text></TouchableOpacity></ScrollView></SafeAreaView>}
+const styles=StyleSheet.create({safe:{flex:1},body:{padding:20,gap:12},title:{fontSize:24,fontWeight:'700'},section:{fontSize:19,fontWeight:'700',marginTop:6},card:{padding:15,borderRadius:12,borderWidth:1,gap:7},row:{flexDirection:'row',gap:10},primary:{minHeight:48,padding:13,borderRadius:10,alignItems:'center',justifyContent:'center',flex:1},secondary:{minHeight:48,padding:13,borderRadius:10,borderWidth:1,alignItems:'center',justifyContent:'center',flex:1},white:{color:'#fff',fontWeight:'700'}});

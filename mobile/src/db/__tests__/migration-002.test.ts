@@ -1,5 +1,4 @@
 import { createBetterSqliteConnection } from '../test-adapter';
-import { runMigrations } from '../migrations';
 import { migration001 } from '../migrations/001_initial_schema';
 import { migration002 } from '../migrations/002_categories_and_transfers';
 import { DatabaseConnection } from '../types';
@@ -109,7 +108,8 @@ describe('Migration 002: Rebuild & Transfer Constraints', () => {
 
   describe('Database-Level Integrity Constraints (Migration 002)', () => {
     beforeEach(async () => {
-      await runMigrations(db);
+      await migration001.up(db);
+      await migration002.up(db);
 
       // Create two test accounts
       const now = Date.now();

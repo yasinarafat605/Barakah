@@ -14,7 +14,7 @@ describe('Migration Canonical Checksums CI Verification', () => {
   const migrationsDir = path.resolve(__dirname, '../migrations');
 
   it('reproducibly matches all canonical migration checksums against .sql files', () => {
-    for (let version = 1; version <= 8; version++) {
+    for (let version = 1; version <= 9; version++) {
       const expectedChecksum = CANONICAL_MIGRATION_CHECKSUMS[version];
       expect(expectedChecksum).toBeDefined();
       expect(expectedChecksum).not.toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'); // Must not be empty string
@@ -33,12 +33,12 @@ describe('Migration Canonical Checksums CI Verification', () => {
     }
   });
 
-  it('freezes every reference SQL and executable TypeScript migration from 001 through 007', () => {
+  it('freezes every reference SQL and executable TypeScript migration from 001 through 009', () => {
     for (const [fileName, expectedHash] of Object.entries(frozenSourceHashes)) {
       const source = fs.readFileSync(path.join(migrationsDir, fileName), 'utf8');
       expect(hashFrozenMigrationSource(source)).toBe(expectedHash);
     }
-    expect(Object.keys(frozenSourceHashes)).toHaveLength(14);
+    expect(Object.keys(frozenSourceHashes)).toHaveLength(18);
   });
 
   it('detects a modified copied TypeScript migration body', () => {

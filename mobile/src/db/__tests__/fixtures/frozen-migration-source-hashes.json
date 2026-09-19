@@ -12,5 +12,9 @@
   "006_backup_integrity_hardening.sql": "642067ddbcef298ed76bd7c31fbfca2276c3ed56d5fe1ee7fd1379580c8658b3",
   "006_backup_integrity_hardening.ts": "5e3f1c30a8760c90223f80e394ac2db75efefacbf7ddaf034c637cde0491941a",
   "007_backup_export_statuses.sql": "4346c14642d6ade4596b1374e45104e102ec8c48d338f7f166eec99bb35def72",
-  "007_backup_export_statuses.ts": "184e69d8717996ec6192befc8ca715a3c4567982c2c49f3daf709143a2e47ec7"
+  "007_backup_export_statuses.ts": "184e69d8717996ec6192befc8ca715a3c4567982c2c49f3daf709143a2e47ec7",
+  "008_planning_foundation.sql": "e9e7727bb25f81b72885f919647e7eae5097cb133350d0713e2b1d6b0f6b60de",
+  "008_planning_foundation.ts": "0a64b16142a472f084313e84812a981d4d62a689c643c81ad22a5e01dafd0028",
+  "009_planning_integrity_corrections.sql": "c7ff9b7611dfc2b7515cf09c8f6ec242b6de6e9ed9665aa136b5653c8a01dcbf",
+  "009_planning_integrity_corrections.ts": "3cb3569533756414d5de08edc22cbee1919255d61a70d13729fd8c63d752999b"
 }

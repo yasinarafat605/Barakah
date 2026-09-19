@@ -11,6 +11,7 @@
 
 import { getDatabase, runExclusiveTransaction } from './client';
 import { assertCivilDate, localCivilDateFromTimestamp } from '../domain/civil-date';
+import { isSupportedCurrency } from '../domain/money';
 import {
   CreateDebtInput,
   DatabaseConnection,
@@ -152,9 +153,9 @@ export async function createDebt(
   }
 
   // Validate principal
-  if (!Number.isInteger(input.originalPrincipalMinor) || input.originalPrincipalMinor <= 0) {
+  if (!Number.isSafeInteger(input.originalPrincipalMinor) || input.originalPrincipalMinor <= 0) {
     throw new Error(
-      `originalPrincipalMinor must be a positive integer (received: ${input.originalPrincipalMinor})`
+      `originalPrincipalMinor must be a positive safe integer (received: ${input.originalPrincipalMinor})`
     );
   }
 
@@ -165,8 +166,10 @@ export async function createDebt(
     }
   }
 
-  const currency = input.currency || 'BDT';
+  const currency = (input.currency || 'BDT').trim().toUpperCase();
+  if (!isSupportedCurrency(currency)) throw new Error('DEBT_ERR_INVALID_CURRENCY');
   const openedAt = input.openedAt ?? now;
+  if (!Number.isSafeInteger(openedAt) || openedAt <= 0) throw new Error('DEBT_ERR_UNSAFE_TIMESTAMP');
   const openedOn = input.openedOn ?? localCivilDateFromTimestamp(openedAt);
   assertCivilDate(openedOn, 'openedOn');
   const dueDate = input.dueDate ?? null;
@@ -283,11 +286,12 @@ export async function recordRepayment(
   const db = customDb ?? (await getDatabase());
   const now = Date.now();
 
-  if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
-    throw new Error(`Repayment amount must be a positive integer (received: ${input.amountMinor})`);
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+    throw new Error(`Repayment amount must be a positive safe integer (received: ${input.amountMinor})`);
   }
 
   const occurredAt = input.occurredAt ?? now;
+  if (!Number.isSafeInteger(occurredAt) || occurredAt <= 0) throw new Error('DEBT_ERR_UNSAFE_TIMESTAMP');
   const occurredOn = input.occurredOn ?? localCivilDateFromTimestamp(occurredAt);
   assertCivilDate(occurredOn, 'occurredOn');
   const note = input.note ? input.note.trim() : null;
@@ -449,13 +453,14 @@ export async function recordAdjustment(
   const db = customDb ?? (await getDatabase());
   const now = Date.now();
 
-  if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
-    throw new Error(`Adjustment amount must be a positive integer (received: ${input.amountMinor})`);
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+    throw new Error(`Adjustment amount must be a positive safe integer (received: ${input.amountMinor})`);
   }
 
   const role: DebtTransactionRole =
     input.direction === 'increase' ? 'adjustment_increase' : 'adjustment_decrease';
   const occurredAt = input.occurredAt ?? now;
+  if (!Number.isSafeInteger(occurredAt) || occurredAt <= 0) throw new Error('DEBT_ERR_UNSAFE_TIMESTAMP');
   const note = input.note ? input.note.trim() : null;
   const dtxId = generateDebtTransactionId();
 

@@ -15,7 +15,7 @@ import {
   DatabaseConnection,
   RawAccountWithBalanceRow,
 } from './types';
-import { Money } from '../domain/money';
+import { isSupportedCurrency, Money } from '../domain/money';
 
 /**
  * Generates a unique, collision-resistant account ID.
@@ -40,7 +40,7 @@ export async function createAccount(
     throw new Error('Account name cannot be empty');
   }
 
-  if (!Number.isInteger(data.initialBalancePoisha)) {
+  if (!Number.isSafeInteger(data.initialBalancePoisha)) {
     throw new TypeError(
       `initialBalancePoisha must be an integer (received: ${data.initialBalancePoisha}). ADR-004 violation.`
     );
@@ -48,6 +48,7 @@ export async function createAccount(
 
   const id = generateAccountId();
   const currency = data.currency ? data.currency.trim().toUpperCase() : 'BDT';
+  if (!isSupportedCurrency(currency)) throw new Error('ACCOUNT_ERR_UNSUPPORTED_CURRENCY');
   const now = Date.now();
 
   await db.runAsync(

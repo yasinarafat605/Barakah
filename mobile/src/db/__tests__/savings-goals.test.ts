@@ -2,7 +2,7 @@ import { createBetterSqliteConnection } from '../test-adapter';
 import { runMigrations } from '../migrations';
 import { createAccount, archiveAccount } from '../accounts';
 import { createExpenseTransaction, createTransfer, softDeleteTransaction, restoreTransaction } from '../transactions';
-import { createSavingsGoal, getAccountAllocationState, getSavingsGoalProgress, linkExistingTransferToGoal, recordGoalAllocation, restoreGoalEntry, softDeleteGoalEntry, updateSavingsGoal } from '../savings-goals';
+import { createSavingsGoal, getAccountAllocationState, getSavingsGoalEntries, getSavingsGoalProgress, linkExistingTransferToGoal, recordGoalAllocation, recordOwnedGoalTransfer, restoreGoalEntry, softDeleteGoalEntry, updateSavingsGoal } from '../savings-goals';
 import type { DatabaseConnection } from '../types';
 
 describe('Savings-goal allocation ledger',()=>{
@@ -65,5 +65,26 @@ describe('Savings-goal allocation ledger',()=>{
     await updateSavingsGoal(goal.id,{targetAmountMinor:200},db);
     expect((await getSavingsGoalProgress(goal.id,db)).lifecycleStatus).toBe('active');
     await expect(updateSavingsGoal(goal.id,{currency:'USD'},db)).rejects.toThrow(/HISTORY_LOCKS/);
+  });
+
+  it('creates a target-only goal and blocks entries until an account is linked',async()=>{
+    const goal=await createSavingsGoal({name:'Target only',targetAmountMinor:500,currency:'GBP'},undefined,db);
+    expect(goal.linked_account_id).toBeNull();
+    await expect(recordGoalAllocation({goalId:goal.id,entryType:'contribution',amountMinor:1},db)).rejects.toThrow(/LINKED_ACCOUNT_REQUIRED/);
+  });
+
+  it('completes all three entry service modes and restores owned-transfer history atomically',async()=>{
+    const source=await createAccount({name:'Source',type:'bank',initialBalancePoisha:1000,currency:'BDT'},db);
+    const linked=await createAccount({name:'Linked',type:'bank',initialBalancePoisha:500,currency:'BDT'},db);
+    const goal=await createSavingsGoal({name:'Modes',targetAmountMinor:1000,currency:'BDT',linkedAccountId:linked.id},undefined,db);
+    await recordGoalAllocation({goalId:goal.id,entryType:'contribution',amountMinor:100,occurredOn:'2026-02-01'},db);
+    const existingTransfer=await createTransfer({sourceAccountId:source.id,destinationAccountId:linked.id,amountMinor:100,occurredOn:'2026-02-02'},db);
+    await linkExistingTransferToGoal({goalId:goal.id,entryType:'contribution',amountMinor:100,transactionId:existingTransfer.destinationTransaction.id},db);
+    const owned=await recordOwnedGoalTransfer({goalId:goal.id,entryType:'contribution',amountMinor:100,otherAccountId:source.id,occurredOn:'2026-02-03'},db);
+    expect((await getSavingsGoalEntries(goal.id,false,db)).map((entry)=>entry.link_mode)).toEqual(['allocation_only','existing_transfer','owned_transfer']);
+    await softDeleteGoalEntry(owned.id,db);
+    expect((await getSavingsGoalEntries(goal.id,true,db)).find((entry)=>entry.id===owned.id)?.deleted_at).not.toBeNull();
+    await restoreGoalEntry(owned.id,db);
+    expect((await getSavingsGoalEntries(goal.id,false,db)).some((entry)=>entry.id===owned.id)).toBe(true);
   });
 });

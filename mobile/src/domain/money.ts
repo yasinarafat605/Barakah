@@ -21,6 +21,22 @@ export const CURRENCY_SYMBOLS: Record<string, string> = {
   PKR: 'Rs ',
 };
 
+export const CURRENCY_FRACTION_DIGITS = {
+  BDT: 2, USD: 2, GBP: 2, EUR: 2, SAR: 2, AED: 2, MYR: 2, INR: 2, PKR: 2,
+} as const;
+export type SupportedCurrency = keyof typeof CURRENCY_FRACTION_DIGITS;
+export const SUPPORTED_CURRENCIES = Object.keys(CURRENCY_FRACTION_DIGITS) as SupportedCurrency[];
+
+export function isSupportedCurrency(currency: string): currency is SupportedCurrency {
+  return Object.prototype.hasOwnProperty.call(CURRENCY_FRACTION_DIGITS, currency.trim().toUpperCase());
+}
+
+export function getCurrencyFractionDigits(currency: string): number {
+  const normalized = currency.trim().toUpperCase();
+  if (!isSupportedCurrency(normalized)) throw new Error('MONEY_ERR_UNSUPPORTED_CURRENCY');
+  return CURRENCY_FRACTION_DIGITS[normalized];
+}
+
 /**
  * Converts any Latin digits (0-9) in a string to Bengali numerals (০-৯).
  */
@@ -67,7 +83,10 @@ export interface MoneyParseResult {
  * - Zero and negative amounts rejected.
  * - Values exceeding JS safe integer range (Number.MAX_SAFE_INTEGER) rejected.
  */
-export function parseMoneyInput(rawInput: string, decimalPlaces: number = 2): MoneyParseResult {
+export function parseMoneyInput(rawInput: string, currencyOrDecimalPlaces: string | number = 'BDT'): MoneyParseResult {
+  const decimalPlaces = typeof currencyOrDecimalPlaces === 'number'
+    ? currencyOrDecimalPlaces
+    : getCurrencyFractionDigits(currencyOrDecimalPlaces);
   const trimmed = rawInput.trim();
   if (!trimmed) {
     return { valid: false, amountMinor: 0, error: 'empty' };
@@ -123,7 +142,7 @@ export function parseMoneyInput(rawInput: string, decimalPlaces: number = 2): Mo
   const paddedFrac = fracPart.padEnd(decimalPlaces, '0');
   const intBig = intPart ? BigInt(intPart) : 0n;
   const fracBig = paddedFrac ? BigInt(paddedFrac) : 0n;
-  const multiplier = BigInt(10 ** decimalPlaces);
+  const multiplier = 10n ** BigInt(decimalPlaces);
   const totalMinorBig = intBig * multiplier + fracBig;
 
   if (totalMinorBig <= 0n) {
@@ -138,6 +157,37 @@ export function parseMoneyInput(rawInput: string, decimalPlaces: number = 2): Mo
     valid: true,
     amountMinor: Number(totalMinorBig),
   };
+}
+
+function groupIntegerDigits(value: string): string {
+  return value.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+export function formatMinorUnits(amountMinor: number | bigint, currency: string, locale: 'bn' | 'en' = 'en'): string {
+  const normalizedCurrency = currency.trim().toUpperCase();
+  const fractionDigits = getCurrencyFractionDigits(normalizedCurrency);
+  if (typeof amountMinor === 'number' && !Number.isSafeInteger(amountMinor)) throw new RangeError('MONEY_ERR_UNSAFE_AMOUNT');
+  const value = typeof amountMinor === 'bigint' ? amountMinor : BigInt(amountMinor);
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const divisor = 10n ** BigInt(fractionDigits);
+  const major = absolute / divisor;
+  const fraction = absolute % divisor;
+  const numeric = fractionDigits === 0
+    ? groupIntegerDigits(major.toString())
+    : `${groupIntegerDigits(major.toString())}.${fraction.toString().padStart(fractionDigits, '0')}`;
+  const localized = locale === 'bn' ? toBengaliNumerals(numeric) : numeric;
+  const symbol = CURRENCY_SYMBOLS[normalizedCurrency] ?? `${normalizedCurrency} `;
+  return `${negative ? '-' : ''}${symbol}${localized}`;
+}
+
+export function formatBasisPoints(basisPoints: number, locale: 'bn' | 'en' = 'en'): string {
+  if (!Number.isSafeInteger(basisPoints)) throw new RangeError('MONEY_ERR_UNSAFE_BASIS_POINTS');
+  const value = BigInt(basisPoints);
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const text = `${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}%`;
+  return `${negative ? '-' : ''}${locale === 'bn' ? toBengaliNumerals(text) : text}`;
 }
 
 export class Money {
@@ -168,6 +218,7 @@ export class Money {
 
     this.amount = minorUnits;
     this.currency = currency.trim().toUpperCase();
+    getCurrencyFractionDigits(this.currency);
     Object.freeze(this);
   }
 
@@ -270,23 +321,7 @@ export class Money {
    * e.g. 10050 poisha -> "৳১০০.৫০" (bn) or "৳100.50" (en).
    */
   format(locale: 'bn' | 'en' = 'bn'): string {
-    const symbol = CURRENCY_SYMBOLS[this.currency] ?? `${this.currency} `;
-    const isNeg = this.amount < 0;
-    const absAmount = Math.abs(this.amount);
-
-    const majorUnits = Math.floor(absAmount / 100);
-    const minorUnits = absAmount % 100;
-
-    const majorFormatted = majorUnits.toLocaleString('en-US');
-    const minorFormatted = String(minorUnits).padStart(2, '0');
-    const numericString = `${majorFormatted}.${minorFormatted}`;
-
-    if (locale === 'bn') {
-      const bengaliNumeric = toBengaliNumerals(numericString);
-      return isNeg ? `-${symbol}${bengaliNumeric}` : `${symbol}${bengaliNumeric}`;
-    }
-
-    return isNeg ? `-${symbol}${numericString}` : `${symbol}${numericString}`;
+    return formatMinorUnits(this.amount, this.currency, locale);
   }
 
   private assertSameCurrency(other: Money, operation: string): void {

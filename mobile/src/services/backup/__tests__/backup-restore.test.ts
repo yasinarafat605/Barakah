@@ -16,7 +16,7 @@ import {
   serializeHeader,
   deriveKeyFromPassphrase,
 } from '../crypto';
-import { canonicalJsonStringify, compressJsonPayload, computeLegacyTableChecksums } from '../serializer';
+import { canonicalJsonStringify, compressJsonPayload, computeLegacyTableChecksums, computeTableChecksums } from '../serializer';
 
 describe('Backup and Restore Integration Suite', () => {
   const testPassphrase = 'ValidSecretPassphrase123!';
@@ -51,8 +51,8 @@ describe('Backup and Restore Integration Suite', () => {
 
     // Normal transaction
     await db.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_inc_1', 'acc_bdt_bank', 'cat_salary', 7500000, 'income', NULL, NULL, NULL, 'ফেব্রুয়ারি মাসের বেতন', ?, ?, ?, NULL);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+       VALUES ('tx_inc_1', 'acc_bdt_bank', 'cat_salary', 7500000, 'income', NULL, NULL, NULL, 'ফেব্রুয়ারি মাসের বেতন', ?, '2026-01-01', ?, ?, NULL);`,
       now,
       now,
       now
@@ -61,16 +61,16 @@ describe('Backup and Restore Integration Suite', () => {
     // Paired transfer transaction
     const transferId = 'trf_001';
     await db.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_trf_src', 'acc_bdt_bank', NULL, 100000, 'transfer', ?, 'source', 'acc_bdt_cash', 'ব্যাংক থেকে উত্তোলন', ?, ?, ?, NULL);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+       VALUES ('tx_trf_src', 'acc_bdt_bank', NULL, 100000, 'transfer', ?, 'source', 'acc_bdt_cash', 'ব্যাংক থেকে উত্তোলন', ?, '2026-01-01', ?, ?, NULL);`,
       transferId,
       now,
       now,
       now
     );
     await db.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_trf_dst', 'acc_bdt_cash', NULL, 100000, 'transfer', ?, 'destination', 'acc_bdt_bank', 'ব্যাংক থেকে উত্তোলন', ?, ?, ?, NULL);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+       VALUES ('tx_trf_dst', 'acc_bdt_cash', NULL, 100000, 'transfer', ?, 'destination', 'acc_bdt_bank', 'ব্যাংক থেকে উত্তোলন', ?, '2026-01-01', ?, ?, NULL);`,
       transferId,
       now,
       now,
@@ -79,8 +79,8 @@ describe('Backup and Restore Integration Suite', () => {
 
     // Debt repayment cash transaction with matching amount and role
     await db.runAsync(
-      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, created_at, updated_at, deleted_at)
-       VALUES ('tx_repay_1', 'acc_bdt_bank', 'cat_inc_loan_repayment_received', 200000, 'income', NULL, NULL, NULL, 'আংশিক পরিশোধ', ?, ?, ?, NULL);`,
+      `INSERT INTO transactions (id, account_id, category_id, amount, type, transfer_id, transfer_role, related_account_id, note, timestamp, occurred_on, created_at, updated_at, deleted_at)
+       VALUES ('tx_repay_1', 'acc_bdt_bank', 'cat_inc_loan_repayment_received', 200000, 'income', NULL, NULL, NULL, 'আংশিক পরিশোধ', ?, '2026-01-01', ?, ?, NULL);`,
       now,
       now,
       now
@@ -278,10 +278,10 @@ describe('Backup and Restore Integration Suite', () => {
     await db.closeAsync();
   });
 
-  it('round-trips non-empty Phase 5 tables in manifest v2',async()=>{
+  it('round-trips a category-only budget and non-empty Phase 5 tables in manifest v2',async()=>{
     const db=createBetterSqliteConnection();await runMigrations(db);const now=Date.now();
     await db.runAsync("INSERT INTO accounts(id,name,type,initial_balance,currency,created_at,updated_at) VALUES('a','Cash','cash',1000,'BDT',?,?);",now,now);
-    await db.runAsync("INSERT INTO budgets(id,name,period_type,starts_on,ends_on,currency,account_id,expense_limit,rollover_policy,created_at,updated_at) VALUES('b','Month','monthly','2026-01-01','2026-01-31','BDT','a',500,'none',?,?);",now,now);
+    await db.runAsync("INSERT INTO budgets(id,name,period_type,starts_on,ends_on,currency,account_id,rollover_policy,created_at,updated_at) VALUES('b','Month','monthly','2026-01-01','2026-01-31','BDT','a','none',?,?);",now,now);
     await db.runAsync("INSERT INTO budget_categories(id,budget_id,category_id,amount,sort_order,created_at,updated_at) VALUES('bc','b','cat_exp_food_groceries',200,0,?,?);",now,now);
     await db.runAsync("INSERT INTO savings_goals(id,name,target_amount,currency,linked_account_id,lifecycle_status,created_at,updated_at) VALUES('g','Reserve',500,'BDT','a','active',?,?);",now,now);
     await db.runAsync("INSERT INTO savings_goal_entries(id,goal_id,entry_type,amount,link_mode,occurred_at,occurred_on,created_at,updated_at) VALUES('ge','g','contribution',100,'allocation_only',?,'2026-01-01',?,?);",now,now,now);
@@ -292,6 +292,50 @@ describe('Backup and Restore Integration Suite', () => {
     const staging=createBetterSqliteConnection();await populateAndVerifyStagingDatabase(staging,verified.manifest);
     expect((await staging.getFirstAsync<{c:number}>('SELECT count(*) c FROM savings_goal_entries;'))?.c).toBe(1);
     await staging.closeAsync();await db.closeAsync();
+  });
+
+  it('authenticates a schema-8 manifest-v2 backup and upgrades staging through Migration 009',async()=>{
+    const db=createBetterSqliteConnection();await runMigrations(db);const now=Date.now();
+    await db.runAsync("INSERT INTO accounts(id,name,type,initial_balance,currency,created_at,updated_at) VALUES('schema8-account','Preserved','cash',1234,'USD',?,?);",now,now);
+    const current=await createEncryptedBackup(db,testPassphrase,testPassphrase,fastKdfParams);
+    const currentVerified=await verifyAndPreviewBackup(db,current.envelopeBytes,testPassphrase);
+    const manifest=JSON.parse(canonicalJsonStringify(currentVerified.manifest));
+    manifest.schemaVersion=8;
+    manifest.payload.schema_migrations=manifest.payload.schema_migrations.filter((row:{version:number})=>row.version<=8);
+    manifest.rowCounts.schema_migrations=manifest.payload.schema_migrations.length;
+    manifest.tableChecksums=computeTableChecksums(manifest.payload);
+    const salt=new Uint8Array(16),nonce=new Uint8Array(12);nonce[0]=8;
+    const key=await deriveKeyFromPassphrase(testPassphrase,salt,fastKdfParams);
+    const rawHeader=serializeHeader({formatVersion:1,kdfId:1,kdfN:fastKdfParams.N,kdfR:fastKdfParams.r,kdfP:fastKdfParams.p,salt,cipherId:1,nonce,schemaVersion:8,appVersion:1,flags:1,createdAtMs:manifest.createdAtMs});
+    const envelope=encryptPayloadWithHeader(compressJsonPayload(canonicalJsonStringify(manifest)),key,parseHeader(rawHeader));
+    const verified=await verifyAndPreviewBackup(db,envelope,testPassphrase);
+    expect(verified.manifest.manifestVersion).toBe(2);
+    expect(verified.manifest.schemaVersion).toBe(8);
+    const staging=createBetterSqliteConnection();await populateAndVerifyStagingDatabase(staging,verified.manifest);
+    expect((await staging.getFirstAsync<{name:string}>("SELECT name FROM accounts WHERE id='schema8-account';"))?.name).toBe('Preserved');
+    expect((await staging.getFirstAsync<{version:number}>('SELECT max(version) version FROM schema_migrations;'))?.version).toBe(9);
+    await staging.closeAsync();await db.closeAsync();
+  });
+
+  it.each(['wrong transfer leg','related-account-only match'])(
+    'rejects an authenticated payload whose savings evidence has a %s',async(label)=>{
+    const db=createBetterSqliteConnection();await runMigrations(db);const now=Date.now();
+    await db.runAsync("INSERT INTO accounts(id,name,type,initial_balance,currency,created_at,updated_at) VALUES('source','Source','cash',1000,'BDT',?,?),('destination','Destination','cash',0,'BDT',?,?);",now,now,now,now);
+    await db.runAsync("INSERT INTO transactions(id,account_id,amount,type,transfer_id,transfer_role,related_account_id,timestamp,occurred_on,created_at,updated_at) VALUES('src','source',100,'transfer','tr','source','destination',?,'2026-01-01',?,?),('dst','destination',100,'transfer','tr','destination','source',?,'2026-01-01',?,?);",now,now,now,now,now,now);
+    await db.runAsync("INSERT INTO savings_goals(id,name,target_amount,currency,linked_account_id,lifecycle_status,created_at,updated_at) VALUES('g','Goal',500,'BDT','destination','active',?,?);",now,now);
+    await db.runAsync("INSERT INTO savings_goal_entries(id,goal_id,entry_type,amount,link_mode,transaction_id,occurred_at,occurred_on,created_at,updated_at) VALUES('e','g','contribution',100,'existing_transfer','dst',?,'2026-01-01',?,?);",now,now,now);
+    const backup=await createEncryptedBackup(db,testPassphrase,testPassphrase,fastKdfParams);
+    const verified=await verifyAndPreviewBackup(db,backup.envelopeBytes,testPassphrase);
+    const manifest=JSON.parse(canonicalJsonStringify(verified.manifest));
+    if(label==='wrong transfer leg') manifest.payload.savings_goal_entries[0].transaction_id='src';
+    else manifest.payload.savings_goals[0].linked_account_id='source';
+    manifest.tableChecksums=computeTableChecksums(manifest.payload);
+    const salt=new Uint8Array(16),nonce=new Uint8Array(12);nonce[0]=3;
+    const key=await deriveKeyFromPassphrase(testPassphrase,salt,fastKdfParams);
+    const rawHeader=serializeHeader({formatVersion:1,kdfId:1,kdfN:fastKdfParams.N,kdfR:fastKdfParams.r,kdfP:fastKdfParams.p,salt,cipherId:1,nonce,schemaVersion:9,appVersion:1,flags:1,createdAtMs:manifest.createdAtMs});
+    const envelope=encryptPayloadWithHeader(compressJsonPayload(canonicalJsonStringify(manifest)),key,parseHeader(rawHeader));
+    await expect(verifyAndPreviewBackup(db,envelope,testPassphrase)).rejects.toThrow(/evidence is outside|direction disagrees|metadata disagrees/i);
+    await db.closeAsync();
   });
 
   it.each([4,5,6,7])('authenticates schema-%i manifest v1 before deterministically upgrading its portable shape',async(schemaVersion)=>{

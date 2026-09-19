@@ -24,11 +24,11 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
   describe('Migration Engine', () => {
     it('applies migrations from scratch cleanly and tracks them in schema_migrations', async () => {
       const result = await runMigrations(db);
-      expect(result.applied).toBe(8);
-      expect(result.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(result.applied).toBe(9);
+      expect(result.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
       const applied = await getAppliedMigrations(db);
-      expect(applied).toHaveLength(8);
+      expect(applied).toHaveLength(9);
       expect(applied[0].version).toBe(1);
       expect(applied[0].name).toBe('001_initial_schema');
       expect(applied[1].version).toBe(2);
@@ -43,6 +43,7 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
       expect(applied[5].name).toBe('006_backup_integrity_hardening');
       expect(applied[6].version).toBe(7);
       expect(applied[6].name).toBe('007_backup_export_statuses');
+      expect(applied[8].name).toBe('009_planning_integrity_corrections');
       expect(typeof applied[0].applied_at).toBe('number');
     });
 
@@ -128,8 +129,8 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
       // Insert transaction with integer minor units
       const txAmount = 12550; // 125.50 BDT
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_001',
         'acc_cash',
         'cat_food',
@@ -183,8 +184,8 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
 
       await expect(
         db.runAsync(
-          `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+          `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
           'tx_orphan',
           'non_existent_account',
           'cat_exp_food_groceries',
@@ -214,8 +215,8 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
 
       await expect(
         db.runAsync(
-          `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+          `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
           'tx_bad_cat',
           'acc_valid',
           'non_existent_category',
@@ -244,8 +245,8 @@ describe('Barakah Database Core & Migrations (ADR-001, ADR-004)', () => {
       );
 
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_child',
         'acc_parent',
         'cat_inc_salary_wages',

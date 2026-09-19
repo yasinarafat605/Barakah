@@ -1,26 +1,25 @@
 # Phase 5 planning foundation handover
 
-Date: 16 September 2026
-Baseline: `d5363180999dc8f6d39aeabc657c7e1bdcaf7963`
+Date: 19 September 2026
+Correction baseline: `3a78d6b00ca7f2d1bb55e5bae48e606820afc754`
 
 ## Delivered
 
-- Migration 008; released migrations 001–007 remain byte-identical.
-- Stable transaction civil dates with strict Gregorian validation and deterministic UTC backfill/defaulting for legacy SQL callers.
-- Account archival preserves history, requires confirmation for funded goals, and blocks new money movement.
-- Budgets, category allocations, canonical `archived_at` state, overlap rules, derived actuals, and `none`/`unspent_only` rollover.
-- Debt-principal actuals count only explicitly allocated Loan Given/Loan Repayment categories; debt income, transfers, and non-cash adjustments do not count; metadata disagreement fails closed.
-- Savings goals with account-wide availability, underfunding, lifecycle derivation, three evidence modes, and bidirectional soft-delete/restore.
-- Permanent transaction-evidence reservation across soft deletion; repository rules also reserve the whole transfer.
-- Backup manifest v2 planning coverage and authenticated v1 compatibility through isolated schema-8 staging restore.
-- Plan and Islamic navigation. Zakat readiness displays no estimate until required inputs and rules exist.
+- Migration 009 closes the civil-date boundary while released Migrations 001–008 remain byte-identical.
+- New transaction inserts require an explicit valid `occurred_on`; budgets, goal targets, and goal entries have strict insert/update Gregorian triggers.
+- Schema 9 uses backup envelope v1/manifest v2. Authenticated schema 4–7 manifest-v1 and schema-8 manifest-v2 payloads restore into isolated schema-9 staging databases.
+- Budget edits reject archived/deleted rows and lock period, currency, and scope after qualifying activity. Allocation mutation and archive restoration use exclusive transactions and revalidate meaningful targets, limits, rollover, and overlap.
+- Restore validation accepts category-only budgets and requires goal transfer evidence to use the linked account's correct transfer leg and pair semantics.
+- Money/timestamp write boundaries enforce safe integers. Supported currencies are BDT, USD, GBP, EUR, SAR, AED, MYR, INR, and PKR, each with two fractional digits.
+- Planning UI uses integer-minor-unit parsing/display, explicit global currencies, edit/review/dirty-form/submission-lock behavior, budget drill-down, target-only goals, all three entry modes, and entry deletion/restoration.
+- English and Bengali planning keys have parity; internal codes map to safe localized messages.
 
 ## Verification boundary
 
-Jest uses deterministic mocks and a native-compatible SQLite adapter; it is not native runtime QA. Expo web export and Android prebuild are build-time checks. A real browser reload/OPFS persistence session and an Android emulator or physical-device session must be recorded separately if performed.
+Jest uses deterministic mocks and a native-compatible SQLite adapter; it is not native runtime QA. Expo web export and Android prebuild are build-time checks only.
 
 ## Manual QA still required
 
-- Android emulator or physical device: create/archive/restore accounts; create budgets and goals; exercise transfer-linked goal deletion/restoration; backup, terminate, and restore.
-- Browser with required cross-origin isolation headers: create planning records, fully reload, and confirm SQLite/OPFS persistence.
-- Accessibility, Bangla copy, and compact-screen layout review for new planning forms.
+- Android emulator or physical device: all planning lifecycle and entry modes, backup, process termination, and restore.
+- Browser with deployment cross-origin-isolation headers: create planning data, fully reload, and verify SQLite/OPFS persistence.
+- Manual accessibility review at 200% text scaling with TalkBack/VoiceOver, keyboard navigation, privacy masking, Bangla copy, and compact screens.

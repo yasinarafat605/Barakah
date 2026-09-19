@@ -172,8 +172,8 @@ describe('Accounts Repository & Derived Balance Engine (ADR-004, ADR-005)', () =
 
       // Transaction 1: Income of 200.00 BDT to Pocket Cash
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_1',
         cash.id,
         'cat_income',
@@ -186,8 +186,8 @@ describe('Accounts Repository & Derived Balance Engine (ADR-004, ADR-005)', () =
 
       // Transaction 2: Expense of 150.50 BDT from Pocket Cash
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_2',
         cash.id,
         'cat_expense',
@@ -200,8 +200,8 @@ describe('Accounts Repository & Derived Balance Engine (ADR-004, ADR-005)', () =
 
       // Transaction 3: Expense of 1,200.00 BDT from Salary Bank
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_3',
         bank.id,
         'cat_expense',
@@ -284,8 +284,8 @@ describe('Accounts Repository & Derived Balance Engine (ADR-004, ADR-005)', () =
 
       const now = Date.now();
       await db.runAsync(
-        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        `INSERT INTO transactions (id, account_id, category_id, amount, type, note, timestamp, occurred_on, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', ?);`,
         'tx_child',
         account.id,
         'cat_exp_food_groceries',

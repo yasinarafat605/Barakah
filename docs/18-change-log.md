@@ -2,6 +2,14 @@
 
 ---
 
+## Revision 5 — 19 September 2026
+
+Closed the Phase 5 integrity gaps through Migration 009 while preserving Migrations 001–008. Added mandatory transaction civil dates, database-boundary planning date validation, schema-8/manifest-v2 upgrades, safe-integer write guards, strict restore evidence checks, budget mutation locks, integer-only localized planning displays, explicit global-budget currency selection, and complete goal entry/lifecycle surfaces.
+
+Native-device, real-browser persistence, and manual accessibility QA remain distinct release gates and are not implied by Jest, web export, or Android prebuild.
+
+---
+
 ## Revision 4 — 16 September 2026
 
 Implemented the Phase 5 planning foundation in Migration 008 without modifying released Migrations 001–007. Added stable transaction civil dates, account archival, budgets and category plans, reconciled ledger-derived budget actuals, `none`/`unspent_only` rollover, savings-goal allocation ledgers, permanent transfer-evidence reservation, account-wide availability and underfunding, manifest-v2 backup coverage with authenticated v1 upgrade restore, Plan navigation, and a fail-closed Islamic/Zakat readiness surface.

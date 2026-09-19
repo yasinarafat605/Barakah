@@ -223,3 +223,11 @@ Planning repositories are local-first projections over transaction and debt ledg
 Backup manifest v2 adds planning tables, account archival, and stable transaction civil dates to the portable identity. Restore still accepts authenticated manifest v1 backups for schemas 4–7: it verifies original checksums, derives only deterministic Phase 5 defaults, migrates an isolated staging database to schema 8, and verifies the complete destination identity before activation.
 
 Zakat remains fail closed. The Islamic surface reports missing readiness inputs and produces no estimate, percentage, or inferred religious ruling.
+
+### Phase 5 integrity correction (Migration 009)
+
+Migration 009 is the current schema boundary. It removes Migration 008's compatibility-only transaction-date default and requires explicit, real Gregorian civil dates for transaction inserts. Database triggers also validate budget periods, optional goal target dates, and goal-entry dates on insert and update. Migrations 001–008 remain immutable released history.
+
+Backup envelope format remains version 1. Manifest v2 covers schemas 8 and 9; authenticated schema-8 backups are migrated in isolated staging through Migration 009 before identity verification and activation.
+
+All accepted currencies use a two-decimal minor-unit policy: BDT, USD, GBP, EUR, SAR, AED, MYR, INR, and PKR. Repository boundaries reject unsupported codes. Financial parsing and display use integer strings and `BigInt`, not floating-point monetary derivation.
